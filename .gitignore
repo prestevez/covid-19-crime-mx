@@ -2,5 +2,6 @@
 .Rhistory
 box_etal.R
 draft.md
+draft.R
 data/*
 !data/daily_crime_mobility-2020*
