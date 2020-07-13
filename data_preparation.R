@@ -388,6 +388,7 @@ metro_total_prelim %>%
 
 metrobus_total %>%
   bind_rows(metro_total_prelim) %>%
+  mutate(Afluencia = na_if(x = Afluencia, y = 0)) %>%
   pivot_wider(names_from = tipo, values_from = Afluencia) %>%
   mutate(pas_total = metrobus + metro) -> total_pasajeros
 
@@ -398,6 +399,10 @@ total_pasajeros %>%
 
 total_pasajeros %>%
   summary
+
+total_pasajeros %>%
+  filter(is.na(pas_total)) %>%
+  data.frame()
 
 ### join passenger numbers to crime ts
 
