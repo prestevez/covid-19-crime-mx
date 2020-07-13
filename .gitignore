@@ -1,0 +1,6 @@
+.Rproj*
+.Rhistory
+box_etal.R
+draft.md
+data/*
+!data/daily_crime_mobility-2020*
