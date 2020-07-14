@@ -67,6 +67,7 @@ carpetas_2016 %>%
   filter(str_detect(delito, "ROBO")) %>%
   filter(!str_detect(delito, "SIN VIOLENCIA") & 
               !str_detect(delito, "S/V")) %>%
+  filter(str_detect(delito, "CASA", negate = TRUE)) %>%
   filter(!str_detect(delito, "INFANTE") & 
            !str_detect(delito, "FLUIDO") &
            !str_detect(delito, "ESCUELA") &
@@ -85,7 +86,11 @@ delitos_vctr_not_in_robos %>%
   delitos_vctr_not_in_robos[.] -> sv_cats
 
 carpetas_2016 %>%
-  filter(delito %in% sv_cats) -> carpetas_2016_robos_sin_violencia
+  filter(delito %in% sv_cats) %>%
+  filter(str_detect(delito, "CASA", negate = TRUE)) %>%
+  filter(str_detect(delito, "INFANTE", negate = TRUE))-> carpetas_2016_robos_sin_violencia
+
+carpetas_2016_robos_sin_violencia %$% delito %>% unique
 
 ## Violent crimes
 
