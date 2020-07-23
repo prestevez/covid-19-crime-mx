@@ -1,0 +1,2405 @@
+---
+title: "Crime and COVID-19: Effects of changes in routine activities in Mexico City"
+subitle: "Replication materials, v0.01"
+author: "Patricio R Estévez-Soto"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r packages, include=TRUE, echo=TRUE}
+require(tidyverse)
+require(lubridate)
+require(magrittr)
+require(broom)
+require(ggthemes)
+
+kable <- knitr::kable
+
+adf.test <- tseries::adf.test
+white.test <- tseries::white.test
+
+Sys.setenv("TZ"="Europe/London")
+require(fable)
+require(tsibble)
+require(feasts)
+
+## multiprocessing
+require(future)
+
+plan(multiprocess, workers = 6)
+
+
+## requires future.apply to be installed
+
+# install.packages("future.apply")
+
+## geom_hex requires hexbin package
+
+# install.packages("hexbin")
+
+# install.packages("cowplot")
+require(cowplot)
+
+# load("tmp.Rdata")
+
+require(scales)
+
+```
+
+
+
+# Introduction
+
+This document contains the replication materials for the study "Crime and COVID-19: Effects of changes in routine activities in Mexico City". The study is available as a pre-print here: ADDRESS. 
+
+This is version 0.01 of the replication materials.
+
+
+# Data
+
+Crime data come from Mexico City's Open Data portal and represent criminal investigations undertaken by the City's criminal prosecutor's office. Violence against women (VAW) calls come from a dedicated phone service. Passenger numbers in public transport come from the same open data portal and count Bus Rapid Transit and Metro passengers (as well as a measure combining total passengers of both services). Only total passenger counts were used in the analysis.
+
+```{r import-crime-data}
+
+daily_crime_mobility <- read_csv("https://raw.githubusercontent.com/prestevez/covid-19-crime-mx/master/data/daily_crime_mobility-2020-07-13.csv") %>% as_tsibble()
+
+covid_date <- ymd("2020-02-29")
+
+covid_lockdown <- ymd("2020-03-23")
+
+```
+
+
+# Data preparation
+
+Observations for the last week of May were discarded to control for the lag in reporting that may affect the most recent figures.
+
+Data were further split into two periods. The "training" data set used to estimate models before the impact of COVID-19 restrictions represent all observations from Jan. 1, 2017 to Feb 28, 2020, the day before the first COVID-19 cases were reported in the country.
+
+```{r data-preparation}
+
+daily_crime_mobility %>%
+  filter(fecha < "2020-05-25") %>%
+  select(-c(año, mes, diasem)) %>%
+  select(date = fecha,
+         "All crimes" = all_crimes,
+         "Violent robbery" = violent_robbery,
+         "Non-violent robbery" = non_violent_robbery,
+         "Robbery against residence" = burglary,
+         "Serious violent crime (non-sexual)" = violent_crime,
+         "Sexual violence" = sex_crime,
+         "Domestic violence" = domestic_violence,
+         "VAW helpline calls" = calls_vaw,
+         "BRT + SCT passengers" = pas_total) %>%
+  mutate("BRT + SCT passengers (in millions)" = `BRT + SCT passengers`/1e6) -> daily_crime_mobility
+
+# The names of columns were changed for aesthetic purposes
+
+# split data into periods
+
+daily_crime_mobility_pre_covid <- daily_crime_mobility %>%
+  filter(date < covid_date)
+
+daily_crime_mobility_post_covid <-daily_crime_mobility %>%
+  filter(date >= covid_date)
+
+daily_crime_mobility_2020 <- daily_crime_mobility %>%
+  filter(date >= "2020-01-01")
+
+```
+
+
+Data summaries for the three data sets are presented next:
+
+```{r eda-summary}
+
+range_as_text <- function(x){
+  rangex <- label_number()(range(x, na.rm = TRUE))
+  paste0("\n[", rangex[1], "-", rangex[2], "]")
+}
+
+mean_sd <- function(x){
+  meanx <- label_number(accuracy = 0.1)(mean(x, na.rm = TRUE))
+  sdx <- label_number(accuracy = 0.1)(sd(x, na.rm = TRUE))
+  
+  paste0(meanx, " (", sdx, ")")
+}
+
+# order for variables
+
+var_names <- c("All crimes",
+  "Violent robbery",
+  "Non-violent robbery",
+  "Robbery against residence",
+  "Serious violent crime (non-sexual)",
+  "Sexual violence",
+  "Domestic violence",
+  "VAW helpline calls",
+  "BRT + SCT passengers",
+  "BRT + SCT passengers (in millions)")
+
+daily_crime_mobility %>%
+  as_tibble() %>%
+  select(-`BRT + SCT passengers`) %>%
+  pivot_longer(-date, names_to = "Variable") %>%
+  group_by(Variable) %>%
+  summarise("Mean (sd)" = mean_sd(value),
+            Range = range_as_text(value)) %>%
+  mutate(Variable = factor(Variable, levels = var_names[-9])) %>%
+  arrange(Variable) %>%
+  kable(digits = 2,
+        align = c("l", "r", "r", "r"),
+        caption = "Summary table for entire period.")
+
+daily_crime_mobility_pre_covid %>%
+  as_tibble() %>%
+  select(-`BRT + SCT passengers`) %>%
+  pivot_longer(-date, names_to = "Variable") %>%
+  group_by(Variable) %>%
+  summarise("Mean (sd)" = mean_sd(value),
+            Range = range_as_text(value)) %>%
+  mutate(Variable = factor(Variable, levels = var_names[-9])) %>%
+  arrange(Variable) %>%
+  kable(digits = 2,
+        align = c("l", "r", "r", "r"),
+        caption = "Summary table for pre-COVID-19 period.")
+
+
+daily_crime_mobility_post_covid %>%
+  as_tibble() %>%
+  select(-`BRT + SCT passengers`) %>%
+  pivot_longer(-date, names_to = "Variable") %>%
+  group_by(Variable) %>%
+  summarise("Mean (sd)" = mean_sd(value),
+            Range = range_as_text(value)) %>%
+  mutate(Variable = factor(Variable, levels = var_names[-9])) %>%
+  arrange(Variable) %>%
+  kable(digits = 2,
+        align = c("l", "r", "r", "r"),
+        caption = "Summary table for post-COVID-19 period.")
+
+daily_crime_mobility_pre_covid %>%
+  as_tibble() %>%
+  select(-`BRT + SCT passengers`) %>%
+  pivot_longer(-date, names_to = "Variable") %>%
+  group_by(Variable) %>%
+  summarise("Pre-COVID-19 mean (sd)" = mean_sd(value)) %>%
+  mutate(Variable = factor(Variable, levels = var_names[-9])) %>%
+  arrange(Variable) -> pre_summary
+
+daily_crime_mobility_post_covid %>%
+  as_tibble() %>%
+  select(-`BRT + SCT passengers`) %>%
+  pivot_longer(-date, names_to = "Variable") %>%
+  group_by(Variable) %>%
+  summarise("Post-COVID-19 mean (sd)" = mean_sd(value)) %>%
+  mutate(Variable = factor(Variable, levels = var_names[-9])) %>%
+  arrange(Variable) -> post_summary
+  
+pre_summary %>%
+  left_join(post_summary) %>%
+  kable(align = c("l", "r", "r", "r"),
+        caption = "Summary table for pre- and post-COVID-19 periods.")
+
+
+```
+
+Next we plot the period from Jan 01 to May 24 for every year/variable to highlight how crimes have changed during the pandemic.
+
+
+```{r temporal-EDA-comparison}
+
+num_days <- daily_crime_mobility %>%
+  filter(date >= "2020-01-01" &
+           date < "2020-05-25") %>% nrow
+
+
+daily_crime_mobility %>%
+  as_tibble %>%
+  select(date) %>%
+  mutate(year = year(date),
+         t = yday(date),
+         mth = month(date, label = TRUE)) %>%
+  filter(year == 2020, t <= num_days) %>%
+  group_by(mth) %>%
+  summarise(t_ind = first(t)) -> mth_t
+
+daily_crime_mobility %>%
+  as_tibble %>%
+  select(-`BRT + SCT passengers`) %>%
+  pivot_longer(-date, names_to = "Variable") %>%
+  mutate(Variable = factor(Variable, levels = var_names),
+         year = year(date),
+         t = yday(date)) %>%
+  filter(date == covid_date | date == covid_lockdown) %$% t %>% unique
+
+tibble(Variable = factor("All crimes"),
+       t = c(49, 77.5),
+       value = 900,
+       labels = c("First cases in Mexico", "Lockdown")) -> covid_annotations
+
+daily_crime_mobility %>%
+  as_tibble %>%
+  select(-`BRT + SCT passengers`) %>%
+  pivot_longer(-date, names_to = "Variable") %>%
+  mutate(Variable = factor(Variable, levels = var_names),
+         year = year(date),
+         t = yday(date)) %>%
+  filter(t <= num_days) %>%
+  select(-date) %>%
+  pivot_wider(names_from = year) %>% 
+  pivot_longer(-c(Variable, t, `2020`),
+               names_to = "Year") %>% 
+  ggplot(aes(t, value)) +
+  geom_line(aes(colour = Year),
+            alpha = 0.5, size = 0.25) +
+  geom_line(aes(y = `2020`, colour = "2020")) +
+  facet_wrap(~ Variable,
+             ncol = 1,
+             scale = "free_y") +
+  # geom_smooth(se = FALSE, alpha = 0.5, linetype = 2) +
+  geom_vline(xintercept = 60, linetype = 2, size = 0.3) +
+  geom_vline(xintercept = 83, linetype = 2, size = 0.3) +
+  geom_text(data = covid_annotations,
+             aes(label = labels,
+                 fontface = 3),
+             size = 2.5,
+             nudge_y = -20) +
+  theme_clean() +
+  theme(legend.position = "bottom",
+        legend.text = element_text(size = 10)) +
+  scale_color_colorblind(NULL) +
+  scale_x_continuous(NULL, 
+                     breaks = mth_t$t_ind, 
+                     labels = mth_t$mth) +
+  ylab(NULL) -> temporal_eda_comparison
+
+ggsave(filename = "plots/temporal_eda_comparison.pdf",
+       plot = temporal_eda_comparison,
+       device = cairo_pdf,
+       width = 8,
+       height = 11)
+
+```
+
+
+# ARIMA Forecasting
+
+This section contains the comparison of the observed counts with those expected based on ARIMA forecasting. Most series used simple ARIMA models (i.e. with stochastic trends). However, sex crimes, domestic violence and VAW helpline calls required the use of a deterministic trend. We do the analysis per crime type first, and then join results to construct the final tables and plots.
+
+- **All crimes**
+
+
+```{r arima-all-crimes}
+
+daily_crime_mobility_pre_covid %>%
+  model(stochastic = ARIMA(log(`All crimes`),  
+                      stepwise = FALSE, 
+                      approximation = FALSE),
+        deterministic = ARIMA(log(`All crimes`) ~ trend(),  
+                      stepwise = FALSE, 
+                      approximation = FALSE)) -> arima_all_crimes
+
+arima_all_crimes %>%
+  select(stochastic) %>%
+  report
+
+arima_all_crimes %>%
+  select(deterministic) %>%
+  report
+
+(arima_all_crimes %>%
+  accuracy -> arima_all_crimes_accuracy)
+
+arima_all_crimes %>%
+  forecast(new_data = daily_crime_mobility_post_covid) -> arima_all_crimes_forecast
+
+(arima_all_crimes_forecast %>%
+  accuracy(data = daily_crime_mobility_post_covid) -> arima_all_crimes_forecast_errors)
+
+# Stochastic model is better
+
+arima_all_crimes_forecast %>%
+  filter(.model == "stochastic") %>%
+  hilo(level = 95) %>%
+  unpack_hilo(`95%`) %>%
+  transmute(date = date, 
+         value = .mean,
+         Variable = "All crimes",
+         ci_low = `95%_lower`,
+         ci_high = `95%_upper`,
+         type = "Forecast") -> arima_all_crimes_final_forecast
+
+arima_all_crimes %>%
+  select(stochastic) %>%
+  forecast(new_data = daily_crime_mobility_pre_covid) %>%
+  hilo(level = 95) %>%
+  unpack_hilo(`95%`) %>%
+  filter(date >= "2020-01-01") %>%
+  transmute(date = date, 
+         value = .mean,
+         Variable = "All crimes",
+         ci_low = `95%_lower`,
+         ci_high = `95%_upper`,
+         type = "Forecast",
+         type2 = "Training") -> arima_all_crimes_training_forecast
+  
+
+```
+
+
+- **Violent robbery**
+
+```{r arima-violent-robbery}
+
+daily_crime_mobility_pre_covid %>%
+  model(stochastic = ARIMA(log(`Violent robbery`),  
+                      stepwise = FALSE, 
+                      approximation = FALSE),
+        deterministic = ARIMA(log(`Violent robbery`) ~ trend(),  
+                      stepwise = FALSE, 
+                      approximation = FALSE)) -> arima_violent_robbery
+
+arima_violent_robbery %>%
+  select(stochastic) %>%
+  report
+
+arima_violent_robbery %>%
+  select(deterministic) %>%
+  report
+
+(arima_violent_robbery %>%
+  accuracy -> arima_violent_robbery_accuracy)
+
+arima_violent_robbery %>%
+  forecast(new_data = daily_crime_mobility_post_covid) -> arima_violent_robbery_forecast
+
+(arima_violent_robbery_forecast %>%
+  accuracy(data = daily_crime_mobility_post_covid) -> arima_violent_robbery_forecast_errors)
+
+# Stochastic model is better
+
+arima_violent_robbery_forecast %>%
+  filter(.model == "stochastic") %>%
+  hilo(level = 95) %>%
+  unpack_hilo(`95%`) %>%
+  transmute(date = date, 
+         value = .mean,
+         Variable = "Violent robbery",
+         ci_low = `95%_lower`,
+         ci_high = `95%_upper`,
+         type = "Forecast") -> arima_violent_robbery_final_forecast
+
+arima_violent_robbery %>%
+  select(stochastic) %>%
+  forecast(new_data = daily_crime_mobility_pre_covid) %>%
+  hilo(level = 95) %>%
+  unpack_hilo(`95%`) %>%
+  filter(date >= "2020-01-01") %>%
+  transmute(date = date, 
+         value = .mean,
+         Variable = "Violent robbery",
+         ci_low = `95%_lower`,
+         ci_high = `95%_upper`,
+         type = "Forecast",
+         type2 = "Training") -> arima_violent_robbery_training_forecast
+  
+
+
+```
+
+
+- **Non-violent robbery**
+
+```{r arima-non-violent-robbery}
+
+daily_crime_mobility_pre_covid %>%
+  model(stochastic = ARIMA(log(`Non-violent robbery`),  
+                      stepwise = FALSE, 
+                      approximation = FALSE),
+        deterministic = ARIMA(log(`Non-violent robbery`) ~ trend(),  
+                      stepwise = FALSE, 
+                      approximation = FALSE)) -> arima_non_violent_robbery
+
+arima_non_violent_robbery %>%
+  select(stochastic) %>%
+  report
+
+arima_non_violent_robbery %>%
+  select(deterministic) %>%
+  report
+
+(arima_non_violent_robbery %>%
+  accuracy -> arima_non_violent_robbery_accuracy)
+
+arima_non_violent_robbery %>%
+  forecast(new_data = daily_crime_mobility_post_covid) -> arima_non_violent_robbery_forecast
+
+(arima_non_violent_robbery_forecast %>%
+  accuracy(data = daily_crime_mobility_post_covid) -> arima_non_violent_robbery_forecast_errors)
+
+# Stochastic model is better
+
+arima_non_violent_robbery_forecast %>%
+  filter(.model == "stochastic") %>%
+  hilo(level = 95) %>%
+  unpack_hilo(`95%`) %>%
+  transmute(date = date, 
+         value = .mean,
+         Variable = "Non-violent robbery",
+         ci_low = `95%_lower`,
+         ci_high = `95%_upper`,
+         type = "Forecast") -> arima_non_violent_robbery_final_forecast
+
+arima_non_violent_robbery %>%
+  select(stochastic) %>%
+  forecast(new_data = daily_crime_mobility_pre_covid) %>%
+  hilo(level = 95) %>%
+  unpack_hilo(`95%`) %>%
+  filter(date >= "2020-01-01") %>%
+  transmute(date = date, 
+         value = .mean,
+         Variable = "Non-violent robbery",
+         ci_low = `95%_lower`,
+         ci_high = `95%_upper`,
+         type = "Forecast",
+         type2 = "Training") -> arima_non_violent_robbery_training_forecast
+  
+
+
+```
+
+
+- **Robbery against residence**
+
+```{r arima-robbery-against-residence}
+
+daily_crime_mobility_pre_covid %>%
+  model(stochastic = ARIMA(log(`Robbery against residence`),  
+                      stepwise = FALSE, 
+                      approximation = FALSE),
+        deterministic = ARIMA(log(`Robbery against residence`) ~ trend(),  
+                      stepwise = FALSE, 
+                      approximation = FALSE)) -> arima_robbery_against_residence
+
+arima_robbery_against_residence %>%
+  select(stochastic) %>%
+  report
+
+arima_robbery_against_residence %>%
+  select(deterministic) %>%
+  report
+
+(arima_robbery_against_residence %>%
+  accuracy -> arima_robbery_against_residence_accuracy)
+
+arima_robbery_against_residence %>%
+  forecast(new_data = daily_crime_mobility_post_covid) -> arima_robbery_against_residence_forecast
+
+(arima_robbery_against_residence_forecast %>%
+  accuracy(data = daily_crime_mobility_post_covid) -> arima_robbery_against_residence_forecast_errors)
+
+# Stochastic model is better
+
+arima_robbery_against_residence_forecast %>%
+  filter(.model == "stochastic") %>%
+  hilo(level = 95) %>%
+  unpack_hilo(`95%`) %>%
+  transmute(date = date, 
+         value = .mean,
+         Variable = "Robbery against residence",
+         ci_low = `95%_lower`,
+         ci_high = `95%_upper`,
+         type = "Forecast") -> arima_robbery_against_residence_final_forecast
+
+arima_robbery_against_residence %>%
+  select(stochastic) %>%
+  forecast(new_data = daily_crime_mobility_pre_covid) %>%
+  hilo(level = 95) %>%
+  unpack_hilo(`95%`) %>%
+  filter(date >= "2020-01-01") %>%
+  transmute(date = date, 
+         value = .mean,
+         Variable = "Robbery against residence",
+         ci_low = `95%_lower`,
+         ci_high = `95%_upper`,
+         type = "Forecast",
+         type2 = "Training") -> arima_robbery_against_residence_training_forecast
+  
+
+
+```
+
+
+- **Serious violent crime (non-sexual)**
+
+```{r arima-serious-violent-crime}
+
+daily_crime_mobility_pre_covid %>%
+  model(stochastic = ARIMA(log(`Serious violent crime (non-sexual)`),  
+                      stepwise = FALSE, 
+                      approximation = FALSE),
+        deterministic = ARIMA(log(`Serious violent crime (non-sexual)`) ~ trend(),  
+                      stepwise = FALSE, 
+                      approximation = FALSE)) -> arima_serious_violent_crime
+
+arima_serious_violent_crime %>%
+  select(stochastic) %>%
+  report
+
+arima_serious_violent_crime %>%
+  select(deterministic) %>%
+  report
+
+(arima_serious_violent_crime %>%
+  accuracy -> arima_serious_violent_crime_accuracy)
+
+arima_serious_violent_crime %>%
+  forecast(new_data = daily_crime_mobility_post_covid) -> arima_serious_violent_crime_forecast
+
+(arima_serious_violent_crime_forecast %>%
+  accuracy(data = daily_crime_mobility_post_covid) -> arima_serious_violent_crime_forecast_errors)
+
+# Stochastic model is better
+
+arima_serious_violent_crime_forecast %>%
+  filter(.model == "stochastic") %>%
+  hilo(level = 95) %>%
+  unpack_hilo(`95%`) %>%
+  transmute(date = date, 
+         value = .mean,
+         Variable = "Serious violent crime (non-sexual)",
+         ci_low = `95%_lower`,
+         ci_high = `95%_upper`,
+         type = "Forecast") -> arima_serious_violent_crime_final_forecast
+
+arima_serious_violent_crime %>%
+  select(stochastic) %>%
+  forecast(new_data = daily_crime_mobility_pre_covid) %>%
+  hilo(level = 95) %>%
+  unpack_hilo(`95%`) %>%
+  filter(date >= "2020-01-01") %>%
+  transmute(date = date, 
+         value = .mean,
+         Variable = "Serious violent crime (non-sexual)",
+         ci_low = `95%_lower`,
+         ci_high = `95%_upper`,
+         type = "Forecast",
+         type2 = "Training") -> arima_serious_violent_crime_training_forecast
+  
+
+
+```
+
+
+- **Sexual violence**
+
+```{r arima-sexual-violence}
+
+daily_crime_mobility_pre_covid %>%
+  model(stochastic = ARIMA(log(`Sexual violence`),  
+                      stepwise = FALSE, 
+                      approximation = FALSE),
+        deterministic = ARIMA(log(`Sexual violence`) ~ trend(),  
+                      stepwise = FALSE, 
+                      approximation = FALSE)) -> arima_sexual_violence
+
+arima_sexual_violence %>%
+  select(stochastic) %>%
+  report
+
+arima_sexual_violence %>%
+  select(deterministic) %>%
+  report
+
+(arima_sexual_violence %>%
+  accuracy -> arima_sexual_violence_accuracy)
+
+arima_sexual_violence %>%
+  forecast(new_data = daily_crime_mobility_post_covid) -> arima_sexual_violence_forecast
+
+(arima_sexual_violence_forecast %>%
+  accuracy(data = daily_crime_mobility_post_covid) -> arima_sexual_violence_forecast_errors)
+
+# Deterministic model is better
+
+arima_sexual_violence_forecast %>%
+  filter(.model == "deterministic") %>%
+  hilo(level = 95) %>%
+  unpack_hilo(`95%`) %>%
+  transmute(date = date, 
+         value = .mean,
+         Variable = "Sexual violence",
+         ci_low = `95%_lower`,
+         ci_high = `95%_upper`,
+         type = "Forecast") -> arima_sexual_violence_final_forecast
+
+
+arima_sexual_violence %>%
+  select(deterministic) %>%
+  forecast(new_data = daily_crime_mobility_pre_covid) %>%
+  hilo(level = 95) %>%
+  unpack_hilo(`95%`) %>%
+  filter(date >= "2020-01-01") %>%
+  transmute(date = date, 
+         value = .mean,
+         Variable = "Sexual violence",
+         ci_low = `95%_lower`,
+         ci_high = `95%_upper`,
+         type = "Forecast",
+         type2 = "Training") -> arima_sexual_violence_training_forecast
+  
+
+
+```
+
+
+- **Domestic violence**
+
+```{r arima-domestic-violence}
+
+daily_crime_mobility_pre_covid %>%
+  model(stochastic = ARIMA(log(`Domestic violence`),  
+                      stepwise = FALSE, 
+                      approximation = FALSE),
+        deterministic = ARIMA(log(`Domestic violence`) ~ trend(),  
+                      stepwise = FALSE, 
+                      approximation = FALSE)) -> arima_domestic_violence
+
+arima_domestic_violence %>%
+  select(stochastic) %>%
+  report
+
+arima_domestic_violence %>%
+  select(deterministic) %>%
+  report
+
+(arima_domestic_violence %>%
+  accuracy -> arima_domestic_violence_accuracy)
+
+arima_domestic_violence %>%
+  forecast(new_data = daily_crime_mobility_post_covid) -> arima_domestic_violence_forecast
+
+(arima_domestic_violence_forecast %>%
+  accuracy(data = daily_crime_mobility_post_covid) -> arima_domestic_violence_forecast_errors)
+
+# Deterministic model is better
+
+arima_domestic_violence_forecast %>%
+  filter(.model == "deterministic") %>%
+  hilo(level = 95) %>%
+  unpack_hilo(`95%`) %>%
+  transmute(date = date, 
+         value = .mean,
+         Variable = "Domestic violence",
+         ci_low = `95%_lower`,
+         ci_high = `95%_upper`,
+         type = "Forecast") -> arima_domestic_violence_final_forecast
+
+arima_domestic_violence %>%
+  select(deterministic) %>%
+  forecast(new_data = daily_crime_mobility_pre_covid) %>%
+  hilo(level = 95) %>%
+  unpack_hilo(`95%`) %>%
+  filter(date >= "2020-01-01") %>%
+  transmute(date = date, 
+         value = .mean,
+         Variable = "Domestic violence",
+         ci_low = `95%_lower`,
+         ci_high = `95%_upper`,
+         type = "Forecast",
+         type2 = "Training") -> arima_domestic_violence_training_forecast
+  
+
+```
+
+
+- **VAW helpline calls**
+
+```{r arima-vaw-calls}
+
+daily_crime_mobility_pre_covid %>%
+  model(stochastic = ARIMA(log(`VAW helpline calls`),  
+                      stepwise = FALSE, 
+                      approximation = FALSE),
+        deterministic = ARIMA(log(`VAW helpline calls`) ~ trend(),  
+                      stepwise = FALSE, 
+                      approximation = FALSE)) -> arima_vaw_calls
+
+arima_vaw_calls %>%
+  select(stochastic) %>%
+  report
+
+arima_vaw_calls %>%
+  select(deterministic) %>%
+  report
+
+(arima_vaw_calls %>%
+  accuracy -> arima_vaw_calls_accuracy)
+
+arima_vaw_calls %>%
+  forecast(new_data = daily_crime_mobility_post_covid) -> arima_vaw_calls_forecast
+
+(arima_vaw_calls_forecast %>%
+  accuracy(data = daily_crime_mobility_post_covid) -> arima_vaw_calls_forecast_errors)
+
+# Deterministic model is better
+
+arima_vaw_calls_forecast %>%
+  filter(.model == "deterministic") %>%
+  hilo(level = 95) %>%
+  unpack_hilo(`95%`) %>%
+  transmute(date = date, 
+         value = .mean,
+         Variable = "VAW helpline calls",
+         ci_low = `95%_lower`,
+         ci_high = `95%_upper`,
+         type = "Forecast") -> arima_vaw_calls_final_forecast
+
+arima_vaw_calls %>%
+  select(deterministic) %>%
+  forecast(new_data = daily_crime_mobility_pre_covid) %>%
+  hilo(level = 95) %>%
+  unpack_hilo(`95%`) %>%
+  filter(date >= "2020-01-01") %>%
+  transmute(date = date, 
+         value = .mean,
+         Variable = "VAW helpline calls",
+         ci_low = `95%_lower`,
+         ci_high = `95%_upper`,
+         type = "Forecast",
+         type2 = "Training") -> arima_vaw_calls_training_forecast
+
+
+```
+
+
+- **BRT + SCT passengers**
+
+```{r arima-passengers}
+
+daily_crime_mobility_pre_covid %>%
+  model(stochastic = ARIMA(log(`BRT + SCT passengers (in millions)`),  
+                      stepwise = FALSE, 
+                      approximation = FALSE),
+        deterministic = ARIMA(log(`BRT + SCT passengers (in millions)`) ~ trend(),  
+                      stepwise = FALSE, 
+                      approximation = FALSE)) -> arima_passengers
+
+arima_passengers %>%
+  select(stochastic) %>%
+  report
+
+arima_passengers %>%
+  select(deterministic) %>%
+  report
+
+(arima_passengers %>%
+  accuracy -> arima_passengers_accuracy)
+
+arima_passengers %>%
+  forecast(new_data = daily_crime_mobility_post_covid) -> arima_passengers_forecast
+
+(arima_passengers_forecast %>%
+  accuracy(data = daily_crime_mobility_post_covid) -> arima_passengers_forecast_errors)
+
+# Stochastic model is better
+
+arima_passengers_forecast %>%
+  filter(.model == "stochastic") %>%
+  hilo(level = 95) %>%
+  unpack_hilo(`95%`) %>%
+  transmute(date = date, 
+         value = .mean,
+         Variable = "BRT + SCT passengers (in millions)",
+         ci_low = `95%_lower`,
+         ci_high = `95%_upper`,
+         type = "Forecast") -> arima_passengers_final_forecast
+
+arima_passengers %>%
+  select(stochastic) %>%
+  forecast(new_data = daily_crime_mobility_pre_covid) %>%
+  hilo(level = 95) %>%
+  unpack_hilo(`95%`) %>%
+  filter(date >= "2020-01-01") %>%
+  transmute(date = date, 
+         value = .mean,
+         Variable = "BRT + SCT passengers (in millions)",
+         ci_low = `95%_lower`,
+         ci_high = `95%_upper`,
+         type = "Forecast",
+         type2 = "Training") -> arima_passengers_training_forecast
+
+
+```
+
+Now we combine ARIMA forecasting results into tables and plots.
+
+Observed vs forecast values.
+
+```{r arima-final-reports}
+
+## Plot first
+
+arima_all_crimes_final_forecast %>%
+  as_tibble %>%
+  bind_rows(arima_violent_robbery_final_forecast,
+            arima_non_violent_robbery_final_forecast,
+            arima_robbery_against_residence_final_forecast,
+            arima_serious_violent_crime_final_forecast,
+            arima_sexual_violence_final_forecast,
+            arima_domestic_violence_final_forecast,
+            arima_vaw_calls_final_forecast,
+            arima_passengers_final_forecast) -> arima_all_final_forecasts
+
+covid_annotations %>%
+  mutate(date = c(covid_date, covid_lockdown)) -> covid_annotations_date
+
+daily_crime_mobility_2020 %>%
+  as_tibble %>%
+  select(-(`BRT + SCT passengers`)) %>%
+  pivot_longer(-date, 
+               names_to = "Variable") %>%
+  mutate(type = "Observed") %>%
+  bind_rows(arima_all_final_forecasts) %>%
+  mutate(Variable = factor(Variable, 
+                           levels = var_names),
+         type = fct_inorder(type)) %>%
+  ggplot(aes(date, value, 
+             colour = type,
+             fill = type)) +
+  geom_line() +
+  geom_ribbon(aes(ymin = ci_low, 
+                  ymax = ci_high,
+                  colour = NULL),
+              alpha = 0.25) +
+  facet_wrap(~ Variable, 
+             ncol = 1,
+             scale = "free_y") +
+  geom_vline(xintercept = covid_date, linetype = 2, size = 0.3) +
+  geom_vline(xintercept = covid_lockdown, linetype = 2, size = 0.3) +
+  geom_text(data = covid_annotations_date,
+             aes(x = date, y = value,
+                 label = labels,
+                 fontface = 3),
+             size = 2.5,
+             nudge_y = -20,
+             nudge_x = -1,
+             hjust = "right",
+            inherit.aes = FALSE) +
+  theme_clean() +
+  theme(legend.position = "bottom",
+        legend.text = element_text(size = 10)) +
+  scale_color_colorblind(NULL) +
+  scale_fill_colorblind(NULL) +
+  labs(caption = "Shaded area represents 95% confidence interval.") +
+  ylab(NULL) +
+  xlab(NULL) -> arima_forecasts_plot
+
+ggsave(filename = "plots/arima_forecasts_plot.pdf",
+       plot = arima_forecasts_plot,
+       device = cairo_pdf,
+       width = 8,
+       height = 11)
+
+
+```
+
+Forecast errors plots.
+
+```{r arima-forecast-error-plots}
+
+arima_all_crimes_training_forecast %>%
+  as_tibble %>%
+  bind_rows(arima_violent_robbery_training_forecast,
+            arima_non_violent_robbery_training_forecast,
+            arima_robbery_against_residence_training_forecast,
+            arima_serious_violent_crime_training_forecast,
+            arima_sexual_violence_training_forecast,
+            arima_domestic_violence_training_forecast,
+            arima_vaw_calls_training_forecast,
+            arima_passengers_training_forecast) -> arima_all_training_forecasts
+
+arima_all_training_forecasts %>%
+  bind_rows(mutate(arima_all_final_forecasts,
+                   type2 = "Testing")) -> arima_all_train_test_forecasts
+
+daily_crime_mobility_2020 %>%
+  as_tibble %>%
+  select(-(`BRT + SCT passengers`)) %>%
+  pivot_longer(-date, 
+               names_to = "Variable",
+               values_to = "Observed") %>%
+  left_join(arima_all_train_test_forecasts) %>%
+  mutate(Variable = factor(Variable, 
+                           levels = var_names),
+         type = fct_inorder(type),
+         forecast_error = Observed - value,
+         forecast_error_high = Observed - ci_low,
+         forecast_error_low = Observed - ci_high) %>%
+  # filter(date >= covid_date) %>%
+  ggplot(aes(date, forecast_error)) +
+  geom_area() +
+  facet_wrap(~ Variable,
+             ncol = 1,
+             scale = "free_y") +
+  geom_vline(xintercept = covid_date, linetype = 2, size = 0.3) +
+  geom_vline(xintercept = covid_lockdown, linetype = 2, size = 0.3) +
+  geom_hline(yintercept = 0) +
+  geom_text(data = mutate(covid_annotations_date,
+                          value = c(300, 300)),
+             aes(x = date, y = value,
+                 label = labels,
+                 fontface = 3),
+             size = 2.5,
+             nudge_y = -20,
+             nudge_x = -1,
+             hjust = "right",
+            inherit.aes = FALSE) +
+  theme_clean() +
+  theme(legend.position = "bottom",
+        legend.text = element_text(size = 10)) +
+  scale_color_colorblind(NULL) +
+  scale_fill_colorblind(NULL) +
+  # labs(caption = "Shaded area represents 95% confidence interval.") +
+  ylab("Forecast errors") +
+  xlab(NULL) -> arima_forecasts_errors_plot
+
+ggsave(filename = "plots/arima_forecasts_errors_plot.pdf",
+       plot = arima_forecasts_errors_plot,
+       device = cairo_pdf,
+       width = 8,
+       height = 11)
+
+
+```
+
+Lastly we generate tables summarising the ARIMA models.
+
+```{r arima-summaries}
+
+list(arima_all_crimes,
+          arima_violent_robbery,
+          arima_non_violent_robbery,
+          arima_robbery_against_residence,
+          arima_serious_violent_crime,
+          arima_sexual_violence,
+          arima_domestic_violence,
+          arima_vaw_calls,
+          arima_passengers) %>%
+  map_df(~ .x %>% pivot_longer(c(stochastic, deterministic),
+                               names_to = "trend"),
+         .id = "Variable") %>%
+  mutate(Variable = factor(Variable, 
+                           labels = var_names[-9]),
+         final_model = case_when(Variable %in% c("Sexual violence",
+                           "Domestic violence",
+                           "VAW helpline calls")  &
+           trend == "deterministic" ~ 1,
+           !Variable %in% c("Sexual violence",
+                           "Domestic violence",
+                           "VAW helpline calls")  &
+           trend == "stochastic" ~ 1,
+           TRUE ~ 0)) %>%
+  filter(final_model > 0) %>%
+  select(-final_model) -> arima_final_models
+
+arima_final_models %>%
+  group_by(Variable) %>%
+  group_map(~ .x %>%
+              select(value) %>%
+              mable(model = value) %$%
+              value[[1]] %>%
+              model_sum() %>%
+              as_tibble() %>%
+              mutate(Variable = .y$Variable)) %>%
+  bind_rows() %>%
+  select(Variable, 
+         Specification = value) %>%
+  mutate(Specification = str_remove(Specification, " errors"),
+         Specification = str_remove(Specification, "LM w/ "),
+         Specification = ifelse(Variable %in% c("Sexual violence",
+                                                "Domestic violence",
+                                                "VAW helpline calls"),
+                                paste0(Specification, " w/ linear trend"),
+                                Specification)) %>%
+  select(Variable,
+         Specification) -> arima_specs
+
+
+
+list(arima_all_crimes_accuracy,
+          arima_violent_robbery_accuracy,
+          arima_non_violent_robbery_accuracy,
+          arima_robbery_against_residence_accuracy,
+          arima_serious_violent_crime_accuracy,
+          arima_sexual_violence_accuracy,
+          arima_domestic_violence_accuracy,
+          arima_vaw_calls_accuracy,
+          arima_passengers_accuracy) %>%
+  bind_rows(.id = "Variable") %>%
+  mutate(Variable = factor(Variable, labels = var_names[-9])) -> arima_all_train_accuracy
+
+
+list(arima_all_crimes_forecast_errors,
+          arima_violent_robbery_forecast_errors,
+          arima_non_violent_robbery_forecast_errors,
+          arima_robbery_against_residence_forecast_errors,
+          arima_serious_violent_crime_forecast_errors,
+          arima_sexual_violence_forecast_errors,
+          arima_domestic_violence_forecast_errors,
+          arima_vaw_calls_forecast_errors,
+          arima_passengers_forecast_errors) %>%
+  bind_rows(.id = "Variable") %>%
+  mutate(Variable = factor(Variable, labels = var_names[-9])) -> arima_all_forecast_errors
+
+
+arima_all_train_accuracy %>%
+  bind_rows(arima_all_forecast_errors) %>%
+    mutate(final_model = case_when(Variable %in% c("Sexual violence",
+                           "Domestic violence",
+                           "VAW helpline calls")  &
+           .model == "deterministic" ~ 1,
+           !Variable %in% c("Sexual violence",
+                           "Domestic violence",
+                           "VAW helpline calls")  &
+           .model == "stochastic" ~ 1,
+           TRUE ~ 0)) %>%
+  filter(final_model > 0) %>%
+  select(Variable, ME, MAPE, type = .type) %>%
+  mutate(type = factor(type,
+                       levels = c("Training",
+                                  "Test"),
+                       labels = c("Pre-COVID-19",
+                                  "Post-COVID-19"))) %>%
+  pivot_wider(names_from = type,
+              values_from = c(ME, MAPE),
+              names_glue = "{type} {.value}") %>%
+  select(1,2,4,3,5) -> arima_all_accuracy
+  
+arima_specs %>%
+  left_join(arima_all_accuracy) %>%
+  kable(digits = 2,
+        align = c("l", "c", "r", "r", "r", "r", "c"),
+        caption = "Arima models specifications and accuracy measures.")
+
+
+# Calculate total forecast error
+daily_crime_mobility_2020 %>%
+  as_tibble %>%
+  select(-(`BRT + SCT passengers`)) %>%
+  pivot_longer(-date, 
+               names_to = "Variable",
+               values_to = "Observed") %>%
+  left_join(arima_all_train_test_forecasts) %>%
+  mutate(Variable = factor(Variable, 
+                           levels = var_names),
+         type = fct_inorder(type),
+         forecast_error = Observed - value,
+         forecast_error_high = Observed - ci_low,
+         forecast_error_low = Observed - ci_high) %>%
+  filter(date >= covid_date) %>%
+  group_by(Variable) %>%
+  summarise(Observed = sum(Observed),
+            Expected = sum(value),
+            Expected_low = sum(ci_low),
+            Expected_high = sum(ci_high)) %>%
+  transmute(Variable = Variable,
+            total_error = (Observed/Expected - 1),
+            total_error_low = (Observed/Expected_low - 1),
+            total_error_high = (Observed/Expected_high - 1),
+            Period = "Post COVID-19") -> arima_total_prediction_error
+
+# Calculate total post-lockdown forecast error
+daily_crime_mobility_2020 %>%
+  as_tibble %>%
+  select(-(`BRT + SCT passengers`)) %>%
+  pivot_longer(-date, 
+               names_to = "Variable",
+               values_to = "Observed") %>%
+  left_join(arima_all_train_test_forecasts) %>%
+  mutate(Variable = factor(Variable, 
+                           levels = var_names),
+         type = fct_inorder(type),
+         forecast_error = Observed - value,
+         forecast_error_high = Observed - ci_low,
+         forecast_error_low = Observed - ci_high) %>%
+  filter(date >= covid_lockdown) %>%
+  group_by(Variable) %>%
+  summarise(Observed = sum(Observed),
+            Expected = sum(value),
+            Expected_low = sum(ci_low),
+            Expected_high = sum(ci_high)) %>%
+  transmute(Variable = Variable,
+            total_error = (Observed/Expected - 1),
+            total_error_low = (Observed/Expected_low - 1),
+            total_error_high = (Observed/Expected_high - 1),
+            Period = "Post lockdown") -> arima_total_prediction_error_post_lockdown
+
+
+
+
+arima_total_prediction_error %>%
+  bind_rows(arima_total_prediction_error_post_lockdown) %>%
+  transmute(Variable = Variable,
+            "% change" = paste0(label_percent(accuracy = 0.1)(total_error),
+                                " [",
+                                label_percent(accuracy = 0.1)(total_error_high),
+                                ", ",
+                                label_percent(accuracy = 0.1)(total_error_low),
+                                "]"),
+            Period = Period) %>%
+  pivot_wider(names_from = Period,
+              values_from = `% change`,
+              names_glue = "{Period} [95% CI]") %>%
+  kable(align = c("l", "r", "r"),
+        caption = "Total percentage change vs ARIMA forecast.")
+
+```
+
+
+
+Forest plot with post COVID-19 effect
+
+```{r arima-forest-plots}
+
+arima_total_prediction_error %>%
+  bind_rows(arima_total_prediction_error_post_lockdown) %>%
+  mutate(Variable = fct_rev(Variable)) %>%
+  arrange(Variable) %>%
+  ggplot(aes(total_error, Variable, colour = Period)) +
+  geom_point(position = position_dodge(width = -0.9))  +
+  geom_vline(xintercept = 0, colour = "grey70") +
+  geom_errorbarh(aes(xmin = total_error_low, 
+                     xmax = total_error_high), height = .3,
+                 position = position_dodge(width = -0.9)) +
+  geom_text(aes(label = label_percent(accuracy = 0.1)(total_error),
+                colour = NULL),
+            # position = position_dodge(width = 1),
+            nudge_y = c(0.33, -0.1),
+            size = 2.5,
+            vjust = "bottom",
+            show.legend = FALSE) +
+  theme_clean() +
+  # scale_color_colorblind() +
+  scale_color_manual(values = c("#0072B2", "#E69F00")) +
+  scale_x_continuous("Percentage change vs. ARIMA forecast",
+                     labels = scales::percent) +
+  ylab(NULL) +
+  theme(legend.position = "bottom") +
+  labs(caption = "Error bars represent 95% confidence interval") -> arima_change_plot1
+
+ggsave(filename = "plots/arima_change_plot1",
+       plot = arima_change_plot1,
+       device = cairo_pdf,
+       width = 7,
+       height = 6)
+
+
+arima_total_prediction_error %>%
+  bind_rows(arima_total_prediction_error_post_lockdown) %>%
+  mutate(Variable = fct_rev(Variable)) %>%
+  arrange(Variable) %>%
+  ggplot(aes(total_error, Variable, colour = Period)) +
+  geom_point(position = position_dodge(width = -0.9))  +
+  geom_vline(xintercept = 0, colour = "grey75") +
+  geom_errorbarh(aes(xmin = total_error_low, 
+                     xmax = total_error_high), height = .3,
+                 position = position_dodge(width = -0.9)) +
+  geom_text(aes(label = paste0(label_percent(accuracy = 0.1)(total_error),
+                               " [",
+                               label_percent(accuracy = 0.1)(total_error_high),
+                               ", ",
+                               label_percent(accuracy = 0.1)(total_error_low),
+                               "]"),
+                colour = NULL),
+            nudge_y = c(0.33, -0.1),
+            nudge_x = -.05,
+            size = 2.5,
+            vjust = "bottom",
+            hjust = "left",
+            show.legend = FALSE) +
+  theme_clean() +
+  # scale_color_colorblind() +
+  scale_color_manual(values = c("#0072B2", "#E69F00")) +
+  scale_x_continuous("Percentage change vs. ARIMA forecast",
+                     labels = scales::percent) +
+  ylab(NULL) +
+  theme(legend.position = "bottom") +
+  labs(caption = "Error bars represent 95% confidence interval") -> arima_change_plot2
+
+ggsave(filename = "plots/arima_change_plot2",
+       plot = arima_change_plot2,
+       device = cairo_pdf,
+       width = 7,
+       height = 6)
+
+
+
+arima_total_prediction_error %>%
+  bind_rows(arima_total_prediction_error_post_lockdown) %>%
+  mutate(Variable = fct_rev(Variable)) %>%
+  arrange(Variable) %>%
+  ggplot(aes(total_error, Variable, colour = Period)) +
+  geom_point(position = position_dodge(width = -0.9))  +
+  geom_vline(xintercept = 0, colour = "grey75") +
+  geom_errorbarh(aes(xmin = total_error_low, 
+                     xmax = total_error_high), height = .3,
+                 position = position_dodge(width = -0.9)) +
+  theme_clean() +
+  # scale_color_colorblind() +
+  scale_color_manual(values = c("#0072B2", "#E69F00")) +
+  scale_x_continuous("Percentage change vs. ARIMA forecast",
+                     labels = scales::percent) +
+  ylab(NULL) +
+  theme(legend.position = "bottom") +
+  labs(caption = "Error bars represent 95% confidence interval") -> arima_change_plot3
+
+ggsave(filename = "plots/arima_change_plot3",
+       plot = arima_change_plot3,
+       device = cairo_pdf,
+       width = 7,
+       height = 6)
+
+
+
+```
+
+# Crime and mobility error correction models
+
+This section contains the error correction models for crime and mobility. The ARIMA errors' specifications were recalculated (as they correspond to the errors conditional on mobility). Deterministic trends were used only for sexual violence and domestic violence, and for the VAW helpline calls. The main models were estimated using the entire observation period, though additional models using the pre- and post-COVID-19 periods were estimated as robustness checks.
+
+The results are summarised using tables with estimated parameters and model specifications, and with a forest plot of the observed effect conditional on the observed decline in mobility.
+
+Steps followed:
+
+- Fit LM with ARIMA errors
+- Plot residuals vs fitted, density residuals and residuals over time (add white noise test)
+- Fit robustness checks models
+- Summarise results in table
+- Summarise results in plot
+
+```{r fit-LM-ARIMA-errors}
+
+daily_crime_mobility %>%
+  select(-c(`BRT + SCT passengers`)) %>%
+  pivot_longer(-c(date, `BRT + SCT passengers (in millions)`),
+               names_to = "Variable") %>%
+  filter(!Variable %in% c("Sexual violence",
+                           "Domestic violence",
+                           "VAW helpline calls")) %>%
+  mutate(Variable = fct_inorder(Variable)) %>%
+  as_tsibble(key = Variable) %>%
+  model(lm = ARIMA(log(value) ~ log(`BRT + SCT passengers (in millions)`),
+                   stepwise = FALSE,
+                   approximation = FALSE)) -> lm_arima_stochastic
+
+daily_crime_mobility %>%
+  select(-c(`BRT + SCT passengers`)) %>%
+  pivot_longer(-c(date, `BRT + SCT passengers (in millions)`),
+               names_to = "Variable") %>%
+  filter(Variable %in% c("Sexual violence",
+                           "Domestic violence",
+                           "VAW helpline calls")) %>%
+  mutate(Variable = fct_inorder(Variable)) %>%
+  as_tsibble(key = Variable) %>%
+  model(lm = ARIMA(log(value) ~ log(`BRT + SCT passengers (in millions)`) + trend(),
+                   stepwise = FALSE,
+                   approximation = FALSE)) -> lm_arima_deterministic
+
+
+lapply(lm_arima_stochastic$Variable, function(x){
+  print(paste0("Report for ", x))
+  lm_arima_stochastic %>%
+    filter(Variable == x) %>%
+    select(lm) %>%
+    report
+})
+
+lapply(lm_arima_deterministic$Variable, function(x){
+  print(paste0("Report for ", x))
+  lm_arima_deterministic %>%
+    filter(Variable == x) %>%
+    select(lm) %>%
+    report
+})
+
+## Accuracy
+
+(lm_arima_stochastic %>%
+  accuracy() %>%
+    bind_rows(accuracy(lm_arima_deterministic)) %>%
+  mutate(Variable = factor(Variable, 
+                           levels = var_names[-c(9,10)])) -> lm_arima_accuracy)
+
+```
+
+
+Now we check the residuals of the LM w/ ARIMA errors models.
+
+
+```{r lm-arima-residual-checks}
+## Residual checks
+
+lm_arima_stochastic %>%
+  augment() %>%
+  bind_rows(augment(lm_arima_deterministic)) %>%
+  mutate(Variable = factor(Variable, 
+                           levels = var_names[-c(9,10)])) -> lm_arima_augment
+
+lm_arima_augment %>%
+  ggplot(aes(.resid)) +
+  geom_density() +
+  facet_wrap(~ Variable, 
+             scales = "free",
+             ncol = 4) +
+  xlab("Residuals") +
+  ylab("Density") +
+  theme_clean()  -> lm_arima_residual_plot
+
+## Residual vs fitted
+
+lm_arima_augment %>%
+  ggplot(aes(.fitted, .resid)) +
+  geom_hex() +
+  scale_fill_continuous_tableau(palette = "Orange") +
+  geom_smooth(se = TRUE,
+              method = "lm") +
+  facet_wrap(~ Variable, 
+             scales = "free",
+             ncol = 4) +
+  ylab("Residuals") +
+  xlab("Fitted") +
+  theme_clean() +
+  theme(legend.position = "none") -> lm_arima_residual_plot2
+
+
+lm_arima_augment %>%
+  ggplot(aes(date, .resid)) +
+  geom_line(size = 0.01, alpha = 0.5) +
+  facet_wrap(~ Variable, 
+             scales = "free",
+             ncol = 4) +
+  ylab("Residuals") +
+  xlab("Date") +
+  theme_clean() +
+  theme(legend.position = "none") -> lm_arima_residual_plot3
+
+lm_arima_augment %>%
+  ACF(.resid, lag_max = 14) %>%
+  autoplot() +
+  # ggplot(aes(date, .resid)) +
+  # geom_line(size = 0.05) +
+  facet_wrap(~ Variable, 
+             # scales = "free",
+             ncol = 4) +
+  ylab("ACF") +
+  xlab("Lags") +
+  theme_clean() -> lm_arima_residual_plot4
+
+
+plot_grid(lm_arima_residual_plot3,
+          lm_arima_residual_plot4,
+          lm_arima_residual_plot,
+          lm_arima_residual_plot2,
+          labels = "AUTO",
+          scale = 0.98,
+          hjust = -0.9,
+          vjust = 1.7) -> arima_all_residual_plots
+
+
+ggsave(filename = "plots/arima_all_residual_plots.pdf",
+       plot = arima_all_residual_plots,
+       device = cairo_pdf,
+       width = 20,
+       height = 12)
+
+```
+
+Some residual ACF plots suggest the presence of serial correlation. We test whether the residuals are white noise using the Ljung-Box test.
+
+```{r check-ljung-box}
+
+lb.test <- function(mdl, lags = 14){
+  
+  get_df <- function(mdl){
+  mdl[[1]]$fit$spec[1:7] %>% sum + 1
+}
+  
+  mdls <- names(mdl)
+  lapply(mdls, function(x){
+    dfs <- get_df(mdl[[x]])
+    mdl %>%
+      select(x) %>%
+      augment %$%
+      Box.test(.resid,
+               lag = lags,
+               type = "Ljung-Box",
+               fitdf = dfs) %$%
+      tibble(.model = x,
+             LB = statistic,
+             df = parameter,
+             pvalue = p.value,
+             sig = victim::add_stars(pvalue))
+  }) %>% 
+    bind_rows
+  }
+
+## Stochastic models
+
+lm_arima_stochastic %>%
+  group_by(Variable) %>%
+  group_map(~ .x %>%
+              as_mable %>%
+              lb.test(lags = 21) %>%
+              mutate(Variable = .y$Variable) %>%
+              select(last_col(), everything())) %>% 
+  bind_rows() -> lm_arima_stochastic_lb
+
+
+# Deterministic models
+
+lm_arima_deterministic %>%
+  group_by(Variable) %>%
+  group_map(~ .x %>%
+              as_mable %>%
+              lb.test(lags = 21) %>%
+              mutate(Variable = .y$Variable) %>%
+              select(last_col(), everything())) %>% 
+  bind_rows() -> lm_arima_deterministic_lb
+
+
+(lm_arima_stochastic_lb %>%
+  bind_rows(lm_arima_deterministic_lb) -> lm_arima_lb)
+
+
+# Also test for stationarity
+
+(list(lm_arima_stochastic,
+     lm_arima_deterministic) %>%
+  map_df(~ .x %>%
+        augment() %>%
+  features(.resid, unitroot_kpss)) %>%
+    mutate(sig = victim::add_stars(kpss_pvalue)) -> lm_arima_kpss)
+
+
+# check for invertibility (Box-Steffensmeier, et al., 2014)
+
+lm_arima_stochastic %>%
+  tidy %>%
+  bind_rows(tidy(lm_arima_deterministic)) %>%
+  filter(abs(estimate) > 1 & 
+           term != "intercept")
+
+```
+
+
+The Ljung-Box test suggest the the residuals of the following crimes are autocorrelated:
+
+- All crimes
+- Violent robbery
+- Serious violent crime
+- Domestic violence
+- VAW calls
+
+It is necessary to fit these models by hand to find a more suitable fit.
+
+There was also an indication of non-stationarity for Violent Robbery. All other residuals were stationary. The fact that Ar terms for all crimes, serious violent crime, domestic violence and VAW calls  were not invertible (the were greater than 1), suggests that the residuals are non-stationary.
+
+- **All crimes**
+
+```{r lm-arima-all-crimes}
+
+daily_crime_mobility %>%
+  model(auto = ARIMA(log(`All crimes`) ~ 1 +
+                        log(`BRT + SCT passengers (in millions)`) +
+                        pdq(2,0,1) +
+                        PDQ(2,0,0,
+                            period = 7)),
+        manual1 = ARIMA(log(`All crimes`) ~ 1 +
+                        log(`BRT + SCT passengers (in millions)`) +
+                        pdq(1,0,1) +
+                        PDQ(1,0,1,
+                            period = 7)),
+        manual2 = ARIMA(log(`All crimes`) ~ 0 +
+                        log(`BRT + SCT passengers (in millions)`) +
+                        pdq(1,1,1) +
+                        PDQ(1,0,1,
+                            period = 7)),
+        manual3 = ARIMA(log(`All crimes`) ~ 0 +
+                        log(`BRT + SCT passengers (in millions)`) +
+                        pdq(1,1,1) +
+                        PDQ(1,1,1,
+                            period = 7))) -> lm_arima_all_crimes_manual
+
+lm_arima_all_crimes_manual %>%
+  augment() %>%
+  ACF(.resid) %>%
+  autoplot()
+
+lm_arima_all_crimes_manual %>%
+  augment() %>%
+  ggplot(aes(date, .resid)) +
+  geom_line() +
+  facet_wrap(~ .model)
+
+lm_arima_all_crimes_manual %>%
+  augment() %>%
+  ggplot(aes(.resid)) +
+  geom_density() +
+  facet_wrap(~ .model)
+
+lm_arima_all_crimes_manual %>%
+  augment() %>%
+  ggplot(aes(.fitted, .resid)) +
+  geom_hex() +
+  geom_smooth(method = "lm") +
+  scale_fill_continuous_tableau(palette = "Orange") +
+  facet_wrap(~ .model) +
+  theme(legend.position = "none")
+
+lm_arima_all_crimes_manual %>%
+  glance
+
+lb.test(lm_arima_all_crimes_manual, lags = 21)
+
+
+lm_arima_all_crimes_manual %>%
+  augment() %>%
+  features(.resid, unitroot_kpss) %>%
+    mutate(sig = victim::add_stars(kpss_pvalue))
+
+# Best model is manual 2
+
+lm_arima_all_crimes_manual %>%
+  select(manual2) %>%
+  report
+
+lm_arima_all_crimes_manual %>%
+  select(manual2) -> lm_arima_all_crimes_manual_best
+
+```
+
+- **Violent robbery**
+
+```{r lm-arima-violent-robbery}
+
+lm_arima_stochastic %>%
+  filter(Variable == "Violent robbery") %>%
+  select(lm) %>%
+  report
+
+daily_crime_mobility %>%
+  model(auto = ARIMA(log(`Violent robbery`) ~ 0 +
+                        log(`BRT + SCT passengers (in millions)`) +
+                        pdq(1,1,2) +
+                        PDQ(2,0,0,
+                            period = 7)),
+        manual1 = ARIMA(log(`Violent robbery`) ~ 0 +
+                        log(`BRT + SCT passengers (in millions)`) +
+                        pdq(1,1,2) +
+                        PDQ(1,0,1,
+                            period = 7)),
+        # manual2 = ARIMA(log(`Violent robbery`) ~ 0 +
+        #                 log(`BRT + SCT passengers (in millions)`) +
+        #                 pdq(1,1,2) +
+        #                 PDQ(2,0,0,
+        #                     period = 7)),
+        # manual3 = ARIMA(log(`Violent robbery`) ~ 0 +
+        #                 log(`BRT + SCT passengers (in millions)`) +
+        #                 pdq(1,1,2) +
+        #                 PDQ(2,0,0,
+        #                     period = 7))
+        ) -> lm_arima_violent_robbery_manual
+
+lm_arima_violent_robbery_manual %>%
+  augment() %>%
+  ACF(.resid) %>%
+  autoplot()
+
+lm_arima_violent_robbery_manual %>%
+  augment() %>%
+  ggplot(aes(date, .resid)) +
+  geom_line() +
+  facet_wrap(~ .model)
+
+lm_arima_violent_robbery_manual %>%
+  augment() %>%
+  ggplot(aes(.resid)) +
+  geom_density() +
+  facet_wrap(~ .model)
+
+lm_arima_violent_robbery_manual %>%
+  augment() %>%
+  ggplot(aes(.fitted, .resid)) +
+  geom_hex() +
+  geom_smooth(method = "lm") +
+  scale_fill_continuous_tableau(palette = "Orange") +
+  facet_wrap(~ .model) +
+  theme(legend.position = "none")
+
+lm_arima_violent_robbery_manual %>%
+  glance
+
+lb.test(lm_arima_violent_robbery_manual, lags = 21)
+
+
+lm_arima_violent_robbery_manual %>%
+  augment() %>%
+  features(.resid, unitroot_kpss) %>%
+    mutate(sig = victim::add_stars(kpss_pvalue))
+
+# Best model is manual 1
+
+lm_arima_violent_robbery_manual %>%
+  select(manual1) %>%
+  report
+
+
+lm_arima_violent_robbery_manual %>%
+  select(manual1) -> lm_arima_violent_robbery_manual_best
+
+```
+
+- **Serious violent crime**
+
+```{r lm-arima-serious-violent-crime}
+
+lm_arima_stochastic %>%
+  filter(Variable == "Serious violent crime (non-sexual)") %>%
+  select(lm) %>%
+  report
+
+daily_crime_mobility %>%
+  model(auto = ARIMA(log(`Serious violent crime (non-sexual)`) ~ 1 +
+                        log(`BRT + SCT passengers (in millions)`) +
+                        pdq(2,0,1) +
+                        PDQ(2,0,0,
+                            period = 7)),
+        manual1 = ARIMA(log(`Serious violent crime (non-sexual)`) ~ 1 +
+                        log(`BRT + SCT passengers (in millions)`) +
+                        pdq(2,0,1) +
+                        PDQ(1,0,1,
+                            period = 7)),
+        manual2 = ARIMA(log(`Serious violent crime (non-sexual)`) ~ 0 +
+                        log(`BRT + SCT passengers (in millions)`) +
+                          pdq(1,1,1) +
+                          PDQ(1,0,1,
+                            period = 7)),
+        manual3 = ARIMA(log(`Serious violent crime (non-sexual)`) ~ 0 +
+                        log(`BRT + SCT passengers (in millions)`) + 
+                        pdq(1,1,1) + 
+                        PDQ(1,1,1,
+                            period = 7))
+        ) -> lm_arima_serious_violent_crime_manual
+
+lm_arima_serious_violent_crime_manual %>%
+  augment() %>%
+  ACF(.resid) %>%
+  autoplot()
+
+lm_arima_serious_violent_crime_manual %>%
+  augment() %>%
+  ggplot(aes(date, .resid)) +
+  geom_line() +
+  facet_wrap(~ .model)
+
+lm_arima_serious_violent_crime_manual %>%
+  augment() %>%
+  ggplot(aes(.resid)) +
+  geom_density() +
+  facet_wrap(~ .model)
+
+lm_arima_serious_violent_crime_manual %>%
+  augment() %>%
+  ggplot(aes(.fitted, .resid)) +
+  geom_hex() +
+  geom_smooth(method = "lm") +
+  scale_fill_continuous_tableau(palette = "Orange") +
+  facet_wrap(~ .model) +
+  theme(legend.position = "none")
+
+lm_arima_serious_violent_crime_manual %>%
+  glance
+
+lb.test(lm_arima_serious_violent_crime_manual, lags = 21)
+
+
+lm_arima_serious_violent_crime_manual %>%
+  augment() %>%
+  features(.resid, unitroot_kpss) %>%
+    mutate(sig = victim::add_stars(kpss_pvalue))
+
+# Best model is manual 2
+
+lm_arima_stochastic %>%
+  filter(Variable == "Serious violent crime (non-sexual)") %>%
+  select(lm) %>%
+  report
+
+lm_arima_serious_violent_crime_manual %>%
+  select(manual2) %>%
+  report
+
+lm_arima_serious_violent_crime_manual %>%
+  select(manual2) -> lm_arima_serious_violent_crime_manual_best
+
+```
+
+- **Domestic violence**
+
+```{r lm-arima-domestic-violence}
+
+lm_arima_deterministic %>%
+  filter(Variable == "Domestic violence") %>%
+  select(lm) %>%
+  report
+
+daily_crime_mobility %>%
+  model(auto = ARIMA(log(`Domestic violence`) ~ 1 + 
+                       trend() +
+                        log(`BRT + SCT passengers (in millions)`) +
+                        pdq(2,0,1) +
+                        PDQ(2,0,0,
+                            period = 7)),
+        manual1 = ARIMA(log(`Domestic violence`) ~ 1 + 
+                       trend() +
+                        log(`BRT + SCT passengers (in millions)`) +
+                        pdq(2,0,1) +
+                        PDQ(1,0,1,
+                            period = 7)),
+        manual2 = ARIMA(log(`Domestic violence`) ~ 0 + 
+                       trend() +
+                        log(`BRT + SCT passengers (in millions)`) +
+                          pdq(1,1,1) +
+                          PDQ(1,0,1,
+                            period = 7)),
+        manual3 = ARIMA(log(`Domestic violence`) ~ 0 +
+                       # trend() +
+                        log(`BRT + SCT passengers (in millions)`) +
+                        pdq(1,1,1) +
+                        PDQ(1,0,1,
+                            period = 7))
+        ) -> lm_arima_domestic_violence_manual
+
+lm_arima_domestic_violence_manual %>%
+  augment() %>%
+  ACF(.resid) %>%
+  autoplot()
+
+lm_arima_domestic_violence_manual %>%
+  augment() %>%
+  ggplot(aes(date, .resid)) +
+  geom_line() +
+  facet_wrap(~ .model)
+
+lm_arima_domestic_violence_manual %>%
+  augment() %>%
+  ggplot(aes(.resid)) +
+  geom_density() +
+  facet_wrap(~ .model)
+
+lm_arima_domestic_violence_manual %>%
+  augment() %>%
+  ggplot(aes(.fitted, .resid)) +
+  geom_hex() +
+  geom_smooth(method = "lm") +
+  scale_fill_continuous_tableau(palette = "Orange") +
+  facet_wrap(~ .model) +
+  theme(legend.position = "none")
+
+lm_arima_domestic_violence_manual %>%
+  glance
+
+lb.test(lm_arima_domestic_violence_manual, lags = 21)
+
+
+lm_arima_domestic_violence_manual %>%
+  augment() %>%
+  features(.resid, unitroot_kpss) %>%
+    mutate(sig = victim::add_stars(kpss_pvalue))
+
+# Best model is manual 3
+
+lm_arima_deterministic %>%
+  filter(Variable == "Domestic violence") %>%
+  select(lm) %>%
+  report
+
+lm_arima_domestic_violence_manual %>%
+  select(manual2) %>%
+  report
+
+lm_arima_domestic_violence_manual %>%
+  select(manual2) -> lm_arima_domestic_violence_manual_best
+
+
+```
+
+
+
+- **VAW helpline calls**
+
+```{r lm-arima-vaw-calls}
+
+# lm_arima_deterministic %>%
+#   filter(Variable == "VAW helpline calls") %>%
+#   select(lm) %>%
+#   report
+
+daily_crime_mobility %>%
+  model(auto = ARIMA(log(`VAW helpline calls`) ~ 1 + 
+                       trend() +
+                        log(`BRT + SCT passengers (in millions)`) +
+                        pdq(2,0,1) +
+                        PDQ(2,0,0,
+                            period = 7)),   
+        manual1 = ARIMA(log(`VAW helpline calls`) ~ 0 + 
+                        trend() +
+                        log(`BRT + SCT passengers (in millions)`) +
+                        pdq(1,1,1) +
+                        PDQ(1,0,3,
+                            period = 7)),
+        manual2 = ARIMA(log(`VAW helpline calls`) ~ 0 +
+                        # trend() +
+                        log(`BRT + SCT passengers (in millions)`) +
+                        pdq(1,1,1) +
+                        PDQ(1,0,3,
+                            period = 7)), 
+        manual3 = ARIMA(log(`VAW helpline calls`) ~ 0 +
+                       trend() +
+                       log(`BRT + SCT passengers (in millions)`) +
+                       pdq(2,0,4) +
+                       PDQ(1,1,2,
+                            period = 7)),
+        manual4 = ARIMA(log(`VAW helpline calls`) ~ 0 +
+                       # trend() +
+                       log(`BRT + SCT passengers (in millions)`) +
+                       pdq(2,0,4) +
+                       PDQ(1,1,2,
+                            period = 7))        
+        ) -> lm_arima_vaw_calls_manual
+
+lm_arima_vaw_calls_manual %>%
+  augment() %>%
+  ACF(.resid) %>%
+  autoplot()
+
+lm_arima_vaw_calls_manual %>%
+  augment() %>%
+  ggplot(aes(date, .resid)) +
+  geom_line() +
+  facet_wrap(~ .model)
+
+lm_arima_vaw_calls_manual %>%
+  augment() %>%
+  ggplot(aes(.resid)) +
+  geom_density() +
+  facet_wrap(~ .model)
+
+lm_arima_vaw_calls_manual %>%
+  augment() %>%
+  ggplot(aes(.fitted, .resid)) +
+  geom_hex() +
+  geom_smooth(method = "lm") +
+  scale_fill_continuous_tableau(palette = "Orange") +
+  facet_wrap(~ .model) +
+  theme(legend.position = "none")
+
+lm_arima_vaw_calls_manual %>%
+  glance
+
+lb.test(lm_arima_vaw_calls_manual, lags = 21)
+
+lm_arima_vaw_calls_manual %>%
+  augment() %>%
+  features(.resid, unitroot_kpss) %>%
+    mutate(sig = victim::add_stars(kpss_pvalue))
+
+# Best model is manual 2
+
+lm_arima_deterministic %>%
+  filter(Variable == "VAW helpline calls") %>%
+  select(lm) %>%
+  report
+
+lm_arima_vaw_calls_manual %>%
+  select(manual2) %>%
+  report
+
+lm_arima_vaw_calls_manual %>%
+  select(manual2) -> lm_arima_vaw_calls_manual_best
+
+```
+
+Now we recreate the residual plots of all models substituting the preferred manual fits for those crimes were problems were identified.
+
+
+```{r lm-residual-checks-corrected}
+
+## Residual checks
+
+corrected_models <- c("All crimes",
+                      "Violent robbery",
+                      "Serious violent crime (non-sexual)",
+                      "Domestic violence",
+                      "VAW helpline calls")
+
+
+list(lm_arima_all_crimes_manual_best,
+     lm_arima_violent_robbery_manual_best,
+     lm_arima_serious_violent_crime_manual_best,
+     lm_arima_domestic_violence_manual_best,
+     lm_arima_vaw_calls_manual_best) -> lm_manual_models_ls
+
+names(lm_manual_models_ls) <- corrected_models
+
+lm_manual_models_ls %>%
+  map_df(~ .x %>% 
+           augment %>%
+           mutate(.model = "lm",
+                  value = .[[3]]) %>%
+        select(.model, 
+               date,
+               value,
+               .fitted,
+               .resid) %>%
+          as_tibble(),
+        .id = "Variable") %>%
+  mutate(Variable = factor(Variable, levels = var_names[-c(9,20)])) %>%
+  bind_rows(filter(lm_arima_augment, 
+                   !Variable %in% corrected_models)) -> lm_arima_augment_corrected
+
+# residual density
+
+lm_arima_augment_corrected %>%
+  ggplot(aes(.resid)) +
+  geom_density() +
+  facet_wrap(~ Variable,
+             scales = "free",
+             ncol = 4) +
+  xlab("Residuals") +
+  ylab("Density") +
+  theme_clean()  -> lm_arima_residual_plot_corrected
+
+## Residual vs fitted
+
+lm_arima_augment_corrected %>%
+  ggplot(aes(.fitted, .resid)) +
+  geom_hex() +
+  scale_fill_continuous_tableau(palette = "Orange") +
+  geom_smooth(se = TRUE,
+              method = "lm") +
+  facet_wrap(~ Variable,
+             scales = "free",
+             ncol = 4) +
+  ylab("Residuals") +
+  xlab("Fitted") +
+  theme_clean() +
+  theme(legend.position = "none") -> lm_arima_residual_plot2_corrected
+
+lm_arima_augment_corrected %>%
+  ggplot(aes(date, .resid)) +
+  geom_line(size = 0.01, alpha = 0.5) +
+  facet_wrap(~ Variable,
+             scales = "free",
+             ncol = 4) +
+  ylab("Residuals") +
+  xlab("Date") +
+  theme_clean() +
+  theme(legend.position = "none") -> lm_arima_residual_plot3_corrected
+
+lm_arima_augment_corrected %>%
+  as_tsibble(key = Variable)  %>%
+  ACF(.resid, lag_max = 21) %>%
+  autoplot() +
+  # ggplot(aes(date, .resid)) +
+  # geom_line(size = 0.05) +
+  facet_wrap(~ Variable,
+             # scales = "free",
+             ncol = 4) +
+  ylab("ACF") +
+  xlab("Lags") +
+  theme_clean() -> lm_arima_residual_plot4_corrected
+
+plot_grid(lm_arima_residual_plot3_corrected,
+          lm_arima_residual_plot4_corrected,
+          lm_arima_residual_plot_corrected,
+          lm_arima_residual_plot2_corrected,
+          labels = "AUTO",
+          scale = 0.98,
+          hjust = -0.9,
+          vjust = 1.7) -> arima_all_residual_plots_corrected
+
+
+ggsave(filename = "plots/arima_all_residual_plots_corrected.pdf",
+       plot = arima_all_residual_plots_corrected,
+       device = cairo_pdf,
+       width = 20,
+       height = 12)
+
+
+```
+Test residuals for autocorrelation and stationarity.
+
+```{r residual-checks-tests-corrected}
+
+# Ljung-Box
+
+lm_manual_models_ls %>%
+  map_df(~ .x %>% 
+        lb.test(lags = 21),
+        .id = "Variable") %>%
+  mutate(Variable = factor(Variable, levels = var_names[-c(9,10)])) %>%
+  bind_rows(filter(lm_arima_lb,
+                   !Variable %in% corrected_models)) %>%
+  arrange(Variable) -> lm_arima_lb_corrected
+
+# # check DF values are correct
+# lm_manual_models_ls %>%
+#   map(report)
+
+# dfs: 
+# all crimes 
+21 - 6
+# violent robbery 
+21 - 7
+# serious violent crime 
+21 - 6
+# domestic violence 
+21 - 7 # change to 14
+# vaw calls 
+21 - 8
+
+# lm_arima_deterministic %>%
+#   filter(Variable == "Sexual violence") %>%
+#   select(lm) %>%
+#   report
+
+# sexual violence
+21 - 5 #  change to 16
+
+(lm_arima_lb_corrected %>%
+  mutate(df = ifelse(Variable %in% c("Sexual violence",
+                                        "Domestic violence"), 
+                     df - 1,
+                     df)) %>%
+  mutate(pvalue = pchisq(LB, df, lower.tail = FALSE),
+         sig = victim::add_stars(pvalue)) -> lm_arima_lb_corrected_2)
+
+## KPSS test
+
+(lm_arima_augment_corrected %>%
+  as_tsibble(key = Variable) %>%
+  features(.resid, unitroot_kpss) %>%
+  transmute(Variable = Variable,
+            KPSS = kpss_stat,
+            pvalue = kpss_pvalue,
+            sig = victim::add_stars(pvalue)) -> lm_arima_corrected_kpss)
+
+# # check for invertibility (Box-Steffensmeier, et al., 2014)
+
+lm_arima_stochastic %>%
+  tidy %>%
+  bind_rows(tidy(lm_arima_deterministic)) %>%
+  filter(!Variable %in% corrected_models) -> lm_arima_auto_tidy
+
+lm_manual_models_ls %>%
+  map_df(tidy,
+         .id = "Variable") %>%
+  mutate(Variable = factor(Variable, 
+                           levels = var_names[-c(9,10)])) %>%
+  bind_rows(lm_arima_auto_tidy) %>%
+  arrange(Variable) -> lm_arima_tidy_estimates
+
+lm_arima_tidy_estimates %>%
+  filter(abs(estimate) > 1)
+
+```
+
+Now construct summary tables for crime-mobility models.
+
+Fit model table:
+
+Variable
+Mobility Estimate (se)
+Spec
+Accuracy?
+AICc
+LB(df) test
+KPSS
+
+
+```{r lm-arima-summaries}
+
+
+## LM Arima specification
+
+lm_arima_stochastic %>%
+  as_tibble() %>%
+  bind_rows(as_tibble(lm_arima_deterministic)) %>%
+  filter(!Variable %in% corrected_models) %>%
+  group_by(Variable) %>%
+  group_map(~ .x %>% 
+              select(lm) %>%
+              as_mable(model = lm)) -> lm_arima_auto_ls
+
+names(lm_arima_auto_ls) <- c("Non-violent robbery", 
+                             "Robbery against residence", 
+                             "Sexual violence")
+
+# Which models had linear trends
+lm_arima_tidy_estimates %>%
+  filter(str_detect(term, "trend")) %$%
+  Variable %>% as.character() -> lm_with_trend
+
+lm_manual_models_ls %>%
+  append(lm_arima_auto_ls) -> lm_arima_corrected_models_ls
+
+lm_arima_corrected_models_ls %>%
+  map_df(~ .x[[1]][[1]] %>%
+        model_sum %>%
+        as_tibble() %>%
+        transmute(Specification = str_remove(value,
+                                    "LM w/ "),
+                  Specification = str_remove(Specification,
+                                    " errors")),
+        .id = "Variable") %>%
+  mutate(Variable = factor(Variable, 
+                           levels = var_names)) %>%
+  arrange(Variable) %>% 
+  mutate(Specification = ifelse(Variable %in% lm_with_trend,
+                                paste0(Specification, " w/ linear trend"),
+                                Specification)) -> lm_arima_specs
+
+# LM Arima accuracies
+
+lm_arima_corrected_models_ls %>%
+  map_df(accuracy,
+         .id = "Variable") %>%
+  mutate(Variable = factor(Variable,
+                           levels = var_names)) %>%
+  select(Variable, ME, MAPE) %>%
+  arrange(Variable) -> lm_arima_accuracy_corrected
+
+# LM ARIMA AICc
+
+lm_arima_corrected_models_ls %>%
+  map_df(glance,
+         .id = "Variable") %>%
+  mutate(Variable = factor(Variable,
+                           levels = var_names)) %>%
+  select(Variable, AICc) %>%
+  arrange(Variable) -> lm_arima_aicc
+
+# Ljung-Box
+
+lm_arima_lb_corrected_2 %>%
+  transmute(Variable = Variable,
+            "Q (df)" = paste0(label_number()(LB),
+                       " (",
+                       df, 
+                       ")",
+                       sig)) -> lm_arima_lb_pretty
+
+## Pretty coefficient estimates
+
+lm_arima_tidy_estimates %>%
+  filter(str_detect(term, "BRT")) %>%
+  transmute(Variable = Variable,
+            "Mobility coefficient (SE)" = paste0(label_number()(estimate),
+                                                 " (",
+                                                 label_number(accuracy = 0.001)(std.error),
+                                                 ")",
+                                                 victim::add_stars(p.value))) %>%
+  left_join(lm_arima_specs) %>%
+  left_join(lm_arima_accuracy_corrected) %>%
+  left_join(lm_arima_aicc) %>%
+  left_join(lm_arima_lb_pretty) %>%
+  left_join(select(lm_arima_corrected_kpss, Variable, KPSS)) -> lm_arima_summary
+
+
+# ncol(lm_arima_summary)
+
+lm_arima_summary %>%
+  kable(digits = 2,
+        align = c("l", "r", "c", "r", "r", "r", "r", "r"),
+        caption = "Crime-mobility models estimates, specifications and GOF measures.")
+
+
+
+```
+
+
+Conduct robustness checks for crime-mobility models
+
+```{r lm-arima-robustness-covid}
+
+# Refit auto models
+
+lm_arima_stochastic %>%
+  as_tibble() %>%
+  bind_rows(as_tibble(lm_arima_deterministic)) %>%
+  filter(!Variable %in% corrected_models) %>%
+  mable(key = Variable, model = lm) -> lm_arima_auto_mable
+
+daily_crime_mobility_pre_covid %>%
+  select(-c(`BRT + SCT passengers`)) %>%
+  pivot_longer(-c(date, `BRT + SCT passengers (in millions)`),
+               names_to = "Variable") %>%
+  mutate(Variable = fct_inorder(Variable)) %>%
+  as_tsibble(key = Variable) %>%
+  refit(lm_arima_auto_mable,
+        new_data = . ,
+        reestimate = TRUE) -> lm_arima_auto_mable_pre_covid
+
+
+daily_crime_mobility_post_covid %>%
+  select(-c(`BRT + SCT passengers`)) %>%
+  pivot_longer(-c(date, `BRT + SCT passengers (in millions)`),
+               names_to = "Variable") %>%
+  mutate(Variable = fct_inorder(Variable)) %>%
+  as_tsibble(key = Variable) %>%
+  refit(lm_arima_auto_mable,
+        new_data = .,
+        reestimate = TRUE) -> lm_arima_auto_mable_post_covid
+
+
+lm_arima_auto_mable_pre_covid %>%
+  tidy %>%
+  mutate(Period = "Pre-COVID-19") %>%
+  bind_rows(lm_arima_auto_mable_post_covid %>% 
+              tidy %>%
+              mutate(Period = "Post-COVID-19")) -> lm_arima_auto_pre_post_tidy
+
+# Refit manual models
+
+lm_manual_models_ls %>%
+  map_df(~ .x %>% refit(new_data = daily_crime_mobility_pre_covid,
+                     reestimate = TRUE) %>%
+        tidy %>%
+        mutate(Period = "Pre-COVID-19"),
+        .id = "Variable") -> lm_manual_pre_tidy
+
+
+lm_manual_models_ls %>%
+  map_df(~ .x %>% refit(new_data = daily_crime_mobility_post_covid,
+                     reestimate = TRUE) %>%
+        tidy %>%
+        mutate(Period = "Post-COVID-19"),
+        .id = "Variable") -> lm_manual_post_tidy
+
+lm_manual_pre_tidy %>%
+  bind_rows(lm_manual_post_tidy) %>%
+  mutate(Variable = factor(Variable, levels = var_names)) %>%
+  bind_rows(lm_arima_auto_pre_post_tidy) %>%
+  arrange(Variable) -> lm_arima_all_models_pre_post_tidy
+
+```
+
+
+
+Forest plot for mobility coefficient (move to end, include robustness checks estimates)
+
+```{r crime-mobility-coefficient}
+
+# get CI for mobility estimates
+
+ci_lower <- function(estimate, se, level = 0.95){
+  alpha <- (1-level)/2
+  critical <- abs(qnorm(alpha))
+  
+  lower <- estimate - se * critical
+  # upper <- estimate + se * alpha
+  
+  lower
+}
+
+ci_upper<- function(estimate, se, level = 0.95){
+  alpha <- (1-level)/2
+  critical <- abs(qnorm(alpha))
+  
+  # lower <- estimate - se * alpha
+  upper <- estimate + se * critical
+  
+  upper
+}
+
+mobility_drop <- 0.5
+
+lm_arima_tidy_estimates %>%
+  mutate(Period = "Pre- and post-COVID-19") %>%
+  bind_rows(lm_arima_all_models_pre_post_tidy) %>%
+  mutate(Period = fct_inorder(Period)) %>%
+  filter(str_detect(term, "BRT")) %>%
+  transmute(Variable = Variable,
+            estimate = estimate,
+            lower = ci_lower(estimate, std.error),
+            upper = ci_upper(estimate, std.error),
+            percent_estimate = (mobility_drop^estimate)-1,
+            percent_lower = (mobility_drop^lower)-1,
+            percent_upper = (mobility_drop^upper)-1,
+            Period = Period) -> lm_arima_ci_complete
+
+lm_arima_ci_complete %>%
+  mutate(Variable = fct_rev(Variable)) %>%
+  arrange(Variable) %>%
+  ggplot(aes(percent_estimate, Variable, colour = Period)) +
+  geom_point(position = position_dodge(width = -0.5))  +
+  geom_vline(xintercept = 0, colour = "grey75") +
+  geom_errorbarh(aes(xmin = percent_lower,
+                     xmax = percent_upper), height = .3,
+                 position = position_dodge(width = -0.5)) +
+  theme_clean() +
+  # scale_color_colorblind() +
+  scale_color_manual(values = c("#000000", "#009E73", "#0072B2")) +
+  scale_x_continuous("Estimated percentage change in crime for a 50% reduction in mobility",
+                     labels = scales::percent) +
+  ylab(NULL) +
+  theme(legend.position = "bottom",
+        legend.text = element_text(size = 10),
+        legend.title = element_text(size = 10),
+        legend.box = "vertical") +
+  guides(colour = guide_legend(nrow=2,byrow=TRUE)) +
+  labs(caption = "Error bars represent 95% confidence interval") -> lm_arima_percent_change_plot
+
+ggsave(filename = "plots/lm_arima_percent_change_plot.pdf",
+       plot = lm_arima_percent_change_plot,
+       device = cairo_pdf,
+       width = 7,
+       height = 6)
+
+
+lm_arima_ci_complete %>%
+  mutate(change = paste0(label_percent(accuracy = 0.1)(percent_estimate),
+                         " [",
+                         label_percent(accuracy = 0.1)(percent_lower),
+                         ", ",
+                         label_percent(accuracy = 0.1)(percent_upper),
+                         "]")) %>%
+  select(Variable, Period, change) %>%
+  pivot_wider(names_from = Period,
+              values_from = change,
+              names_glue = "{Period} [95% CI]") %>%
+  kable(digits = 2,
+        align = c("l","r","r","r"))
+
+
+```
+
+
+
+
+
+
+
+
+```{r}
+
+save.image("tmp.Rdata")
+```
+
