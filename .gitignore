@@ -9,3 +9,4 @@ data/*
 tmp.Rdata
 covid-mobility-models.Rmd
 plots/
+*.sh
