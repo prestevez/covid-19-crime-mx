@@ -5,3 +5,7 @@ draft.md
 draft.R
 data/*
 !data/daily_crime_mobility-2020*
+.Rproj.user
+tmp.Rdata
+covid-mobility-models.Rmd
+plots/
