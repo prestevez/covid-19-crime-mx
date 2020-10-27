@@ -11,3 +11,7 @@ covid-mobility-models.Rmd
 plots/
 *.sh
 results/
+.stata14/
+documents/
+tables/
+*.do
