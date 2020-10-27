@@ -1164,6 +1164,79 @@ arima_total_prediction_error %>%
   kable(align = c("l", "r", "r"),
         caption = "Total percentage change vs ARIMA forecast.")
 
+
+# Estimate the average daily reduction
+
+# Calculate total forecast error per day
+daily_crime_mobility_2020 %>%
+  as_tibble %>%
+  select(-(`BRT + SCT passengers`)) %>%
+  pivot_longer(-date,
+               names_to = "Variable",
+               values_to = "Observed") %>%
+  left_join(arima_all_train_test_forecasts) %>%
+  mutate(Variable = factor(Variable,
+                           levels = var_names),
+         type = fct_inorder(type),
+         forecast_error = Observed - value,
+         forecast_error_high = Observed - ci_low,
+         forecast_error_low = Observed - ci_high) %>%
+  filter(date >= covid_date) %>%
+  group_by(Variable) %>%
+  summarise(Observed = mean(Observed),
+            Expected = mean(value),
+            Expected_low = mean(ci_low),
+            Expected_high = mean(ci_high)) %>%
+  transmute(Variable = Variable,
+            total_error = (Observed/Expected - 1),
+            total_error_low = (Observed/Expected_low - 1),
+            total_error_high = (Observed/Expected_high - 1),
+            Period = "Post COVID-19") -> arima_total_prediction_error_daily
+
+# Calculate total post-lockdown forecast error
+daily_crime_mobility_2020 %>%
+  as_tibble %>%
+  select(-(`BRT + SCT passengers`)) %>%
+  pivot_longer(-date,
+               names_to = "Variable",
+               values_to = "Observed") %>%
+  left_join(arima_all_train_test_forecasts) %>%
+  mutate(Variable = factor(Variable,
+                           levels = var_names),
+         type = fct_inorder(type),
+         forecast_error = Observed - value,
+         forecast_error_high = Observed - ci_low,
+         forecast_error_low = Observed - ci_high) %>%
+  filter(date >= covid_lockdown) %>%
+  group_by(Variable) %>%
+  summarise(Observed = mean(Observed),
+            Expected = mean(value),
+            Expected_low = mean(ci_low),
+            Expected_high = mean(ci_high)) %>%
+  transmute(Variable = Variable,
+            total_error = (Observed/Expected - 1),
+            total_error_low = (Observed/Expected_low - 1),
+            total_error_high = (Observed/Expected_high - 1),
+            Period = "Post lockdown") -> arima_total_prediction_error_post_lockdown_daily
+
+
+arima_total_prediction_error_daily %>%
+  bind_rows(arima_total_prediction_error_post_lockdown_daily) %>%
+  transmute(Variable = Variable,
+            "% change" = paste0(label_percent(accuracy = 0.1)(total_error),
+                                " [",
+                                label_percent(accuracy = 0.1)(total_error_high),
+                                ", ",
+                                label_percent(accuracy = 0.1)(total_error_low),
+                                "]"),
+            Period = Period) %>%
+  pivot_wider(names_from = Period,
+              values_from = `% change`,
+              names_glue = "{Period} [95% CI]") %>%
+  kable(align = c("l", "r", "r"),
+        caption = "Daily average percentage change vs ARIMA forecast.")
+
+
 ```
 
 
@@ -1198,7 +1271,7 @@ arima_total_prediction_error %>%
   theme(legend.position = "bottom") +
   labs(caption = "Error bars represent 95% confidence interval") -> arima_change_plot1
 
-ggsave(filename = "plots/arima_change_plot1",
+ggsave(filename = "plots/arima_change_plot1.pdf",
        plot = arima_change_plot1,
        device = cairo_pdf,
        width = 7,
@@ -1237,7 +1310,7 @@ arima_total_prediction_error %>%
   theme(legend.position = "bottom") +
   labs(caption = "Error bars represent 95% confidence interval") -> arima_change_plot2
 
-ggsave(filename = "plots/arima_change_plot2",
+ggsave(filename = "plots/arima_change_plot2.pdf",
        plot = arima_change_plot2,
        device = cairo_pdf,
        width = 7,
@@ -1264,7 +1337,7 @@ arima_total_prediction_error %>%
   theme(legend.position = "bottom") +
   labs(caption = "Error bars represent 95% confidence interval") -> arima_change_plot3
 
-ggsave(filename = "plots/arima_change_plot3",
+ggsave(filename = "plots/arima_change_plot3.pdf",
        plot = arima_change_plot3,
        device = cairo_pdf,
        width = 7,
@@ -1385,7 +1458,7 @@ lm_arima_augment %>%
 
 lm_arima_augment %>%
   ggplot(aes(date, .resid)) +
-  geom_line(size = 0.01, alpha = 0.5) +
+  geom_line(size = 0.1, alpha = 0.5) +
   facet_wrap(~ Variable,
              scales = "free",
              ncol = 4) +
@@ -1407,14 +1480,14 @@ lm_arima_augment %>%
   theme_clean() -> lm_arima_residual_plot4
 
 
-plot_grid(lm_arima_residual_plot3,
+(plot_grid(lm_arima_residual_plot3,
           lm_arima_residual_plot4,
           lm_arima_residual_plot,
           lm_arima_residual_plot2,
           labels = "AUTO",
           scale = 0.98,
           hjust = -0.9,
-          vjust = 1.7) -> arima_all_residual_plots
+          vjust = 1.7) -> arima_all_residual_plots)
 
 
 ggsave(filename = "plots/arima_all_residual_plots.pdf",
@@ -2341,8 +2414,8 @@ lm_arima_tidy_estimates %>%
             lower = ci_lower(estimate, std.error),
             upper = ci_upper(estimate, std.error),
             percent_estimate = (mobility_drop^estimate)-1,
-            percent_lower = (mobility_drop^lower)-1,
-            percent_upper = (mobility_drop^upper)-1,
+            percent_upper = (mobility_drop^lower)-1,
+            percent_lower = (mobility_drop^upper)-1,
             Period = Period) -> lm_arima_ci_complete
 
 lm_arima_ci_complete %>%
