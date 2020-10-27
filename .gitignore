@@ -7,7 +7,6 @@ data/*
 !data/daily_crime_mobility-2020*
 .Rproj.user
 tmp.Rdata
-covid-mobility-models.Rmd
 plots/
 *.sh
 results/
@@ -15,3 +14,5 @@ results/
 documents/
 tables/
 *.do
+covid-final-models.md
+covid-final-models.html
