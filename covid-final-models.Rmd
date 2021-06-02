@@ -1,8 +1,7 @@
 ---
-title: "Crime and COVID-19: Effects of changes in routine activities in Mexico City"
-subitle: "Replication materials, v0.01"
+title: "Crime and COVID-19: Effects of changes in routine activities in Mexico City. Replication materials, v0.02"
 author: "Patricio R Estévez-Soto"
-date: "`r Sys.Date()`"
+date: "May 3, 2021"
 output: html_document
 ---
 
@@ -48,15 +47,17 @@ require(cowplot)
 
 require(scales)
 
+sessionInfo()
+
 ```
 
 
 
 # Introduction
 
-This document contains the replication materials for the study "Crime and COVID-19: Effects of changes in routine activities in Mexico City". The study is available as a pre-print here: ADDRESS.
+This document contains the replication materials for the study "Crime and COVID-19: Effects of changes in routine activities in Mexico City". The study is available as a pre-print here: [https://doi.org/10.31235/osf.io/3jfwu](https://doi.org/10.31235/osf.io/3jfwu).
 
-This is version 0.01 of the replication materials.
+This is version 0.02 of the replication materials.
 
 
 # Data
@@ -109,6 +110,14 @@ daily_crime_mobility_post_covid <-daily_crime_mobility %>%
 
 daily_crime_mobility_2020 <- daily_crime_mobility %>%
   filter(date >= "2020-01-01")
+
+# create pre/post lockdown subsets
+
+daily_crime_mobility_pre_lockdown <- daily_crime_mobility %>%
+  filter(date < covid_lockdown)
+
+daily_crime_mobility_post_lockdown <-daily_crime_mobility %>%
+  filter(date >= covid_lockdown)
 
 ```
 
@@ -242,6 +251,33 @@ tibble(Variable = factor("All crimes"),
        value = 900,
        labels = c("First cases in Mexico", "Lockdown")) -> covid_annotations
 
+
+### year annotations
+tibble(
+  Variable = factor("All crimes"),
+  value = c(150, 870),
+  labels = c("2020", "2017-2019"),
+  t = c(95, 137)
+) -> year_annotations
+
+tibble(
+  Variable = factor("All crimes"),
+  y = 150,
+  yend = 260,
+  x = 96,
+  xend = 100.5
+) -> y20_curve
+
+tibble(
+  Variable = factor("All crimes"),
+  y = 870,
+  yend = 700,
+  x = 127,
+  xend = 123
+) -> y17_19_curve
+
+#####
+
 daily_crime_mobility %>%
   as_tibble %>%
   select(-`BRT + SCT passengers`) %>%
@@ -256,7 +292,8 @@ daily_crime_mobility %>%
                names_to = "Year") %>%
   ggplot(aes(t, value)) +
   geom_line(aes(colour = Year),
-            alpha = 0.5, size = 0.25) +
+            # alpha = 0.5,
+            size = 0.25) +
   geom_line(aes(y = `2020`, colour = "2020")) +
   facet_wrap(~ Variable,
              ncol = 1,
@@ -269,16 +306,40 @@ daily_crime_mobility %>%
                  fontface = 3),
              size = 2.5,
              nudge_y = -20) +
+  ### Add annotations to identify years
+  geom_text(data = year_annotations,
+            aes(x = t,
+                y = value,
+                label = labels,
+                fontface = 3),
+            size = 2.5,
+            hjust = "right",
+            inherit.aes = FALSE) +
+  geom_curve(data = y20_curve,
+             aes(x = x, y = y, xend = xend, yend = yend),
+             inherit.aes = FALSE,
+             arrow = arrow(length = unit(0.05, "npc")),
+             size = 0.25,
+             curvature = 0.35) +
+  geom_curve(data = y17_19_curve,
+             aes(x = x, y = y, xend = xend, yend = yend),
+             inherit.aes = FALSE,
+             arrow = arrow(length = unit(0.05, "npc")),
+             size = 0.25,
+             curvature = 0.30) +
+  ### end annotations
   theme_clean() +
-  theme(legend.position = "bottom",
+  theme(legend.position = "none",
         legend.text = element_text(size = 10)) +
-  scale_color_colorblind(NULL) +
+  scale_color_manual(NULL,
+                     values = c("gray", "gray", "gray", "black")) +
   scale_x_continuous(NULL,
                      breaks = mth_t$t_ind,
                      labels = mth_t$mth) +
-  ylab(NULL) -> temporal_eda_comparison
+  ylab(NULL) +
+  expand_limits(y = 0) -> temporal_eda_comparison
 
-ggsave(filename = "plots/temporal_eda_comparison.pdf",
+ggsave(filename = "pdf-output/plots/temporal_eda_comparison.pdf",
        plot = temporal_eda_comparison,
        device = cairo_pdf,
        width = 8,
@@ -291,6 +352,8 @@ ggsave(filename = "plots/temporal_eda_comparison.pdf",
 # ARIMA Forecasting
 
 This section contains the comparison of the observed counts with those expected based on ARIMA forecasting. Most series used simple ARIMA models (i.e. with stochastic trends). However, sex crimes, domestic violence and VAW helpline calls required the use of a deterministic trend. We do the analysis per crime type first, and then join results to construct the final tables and plots.
+
+Note that the selection of a deterministic or stochastic trend is based on comparing the prediction errors of the training set, not the testing set, as this represent how well the fitted model captures the pre-covid trend.
 
 - **All crimes**
 
@@ -860,6 +923,29 @@ arima_all_crimes_final_forecast %>%
 covid_annotations %>%
   mutate(date = c(covid_date, covid_lockdown)) -> covid_annotations_date
 
+tibble(
+  Variable = factor("All crimes"),
+  value = c(350, 890),
+  labels = c("Observed", "Forecast (95% CI)"),
+  date = as.Date(c("2020-01-20", "2020-04-30"))
+) -> linetype_annotations
+
+tibble(
+  Variable = factor("All crimes"),
+  y = 350,
+  yend = 500,
+  x = as.Date("2020-01-21"),
+  xend = as.Date("2020-01-25")
+) -> observed_curve
+
+tibble(
+  Variable = factor("All crimes"),
+  y = 890,
+  yend = 670,
+  x = as.Date("2020-05-01"),
+  xend = as.Date("2020-05-06")
+) -> forecast_curve
+
 daily_crime_mobility_2020 %>%
   as_tibble %>%
   select(-(`BRT + SCT passengers`)) %>%
@@ -888,20 +974,44 @@ daily_crime_mobility_2020 %>%
                  label = labels,
                  fontface = 3),
              size = 2.5,
-             nudge_y = -20,
+             nudge_y = -21,
              nudge_x = -1,
              hjust = "right",
             inherit.aes = FALSE) +
+  ### Add annotations to identify linetypes
+  geom_text(data = linetype_annotations,
+            aes(x = date,
+                y = value,
+                label = labels,
+                fontface = 3),
+            size = 2.5,
+            hjust = "right",
+            inherit.aes = FALSE) +
+  geom_curve(data = observed_curve,
+             aes(x = x, y = y, xend = xend, yend = yend),
+             inherit.aes = FALSE,
+             arrow = arrow(length = unit(0.05, "npc")),
+             size = 0.25,
+             curvature = 0.35) +
+  geom_curve(data = forecast_curve,
+             aes(x = x, y = y, xend = xend, yend = yend),
+             inherit.aes = FALSE,
+             arrow = arrow(length = unit(0.05, "npc")),
+             size = 0.25,
+             curvature = -0.30) +
+  ### end annotations
   theme_clean() +
-  theme(legend.position = "bottom",
+  theme(legend.position = "none",
         legend.text = element_text(size = 10)) +
   scale_color_colorblind(NULL) +
   scale_fill_colorblind(NULL) +
-  labs(caption = "Shaded area represents 95% confidence interval.") +
+  # labs(caption = "Shaded area represents 95% confidence interval.") +
   ylab(NULL) +
-  xlab(NULL) -> arima_forecasts_plot
+  xlab(NULL) +
+  # expand y axis to 0
+  expand_limits(y = 0) -> arima_forecasts_plot
 
-ggsave(filename = "plots/arima_forecasts_plot.pdf",
+ggsave(filename = "pdf-output/plots/arima_forecasts_plot.pdf",
        plot = arima_forecasts_plot,
        device = cairo_pdf,
        width = 8,
@@ -972,7 +1082,7 @@ daily_crime_mobility_2020 %>%
   ylab("Forecast errors") +
   xlab(NULL) -> arima_forecasts_errors_plot
 
-ggsave(filename = "plots/arima_forecasts_errors_plot.pdf",
+ggsave(filename = "pdf-output/plots/arima_forecasts_errors_plot.pdf",
        plot = arima_forecasts_errors_plot,
        device = cairo_pdf,
        width = 8,
@@ -995,7 +1105,8 @@ list(arima_all_crimes,
           arima_sexual_violence,
           arima_domestic_violence,
           arima_vaw_calls,
-          arima_passengers) %>%
+          arima_passengers ) %>%
+  map(~ .x %>% as_tibble) %>%
   map_df(~ .x %>% pivot_longer(c(stochastic, deterministic),
                                names_to = "trend"),
          .id = "Variable") %>%
@@ -1271,7 +1382,7 @@ arima_total_prediction_error %>%
   theme(legend.position = "bottom") +
   labs(caption = "Error bars represent 95% confidence interval") -> arima_change_plot1
 
-ggsave(filename = "plots/arima_change_plot1.pdf",
+ggsave(filename = "pdf-output/plots/arima_change_plot1.pdf",
        plot = arima_change_plot1,
        device = cairo_pdf,
        width = 7,
@@ -1310,7 +1421,7 @@ arima_total_prediction_error %>%
   theme(legend.position = "bottom") +
   labs(caption = "Error bars represent 95% confidence interval") -> arima_change_plot2
 
-ggsave(filename = "plots/arima_change_plot2.pdf",
+ggsave(filename = "pdf-output/plots/arima_change_plot2.pdf",
        plot = arima_change_plot2,
        device = cairo_pdf,
        width = 7,
@@ -1337,7 +1448,7 @@ arima_total_prediction_error %>%
   theme(legend.position = "bottom") +
   labs(caption = "Error bars represent 95% confidence interval") -> arima_change_plot3
 
-ggsave(filename = "plots/arima_change_plot3.pdf",
+ggsave(filename = "pdf-output/plots/arima_change_plot3.pdf",
        plot = arima_change_plot3,
        device = cairo_pdf,
        width = 7,
@@ -1346,6 +1457,14 @@ ggsave(filename = "plots/arima_change_plot3.pdf",
 
 
 ```
+
+![](plots/arima_change_plot1.pdf)
+
+![](plots/arima_change_plot2.pdf)
+
+![](plots/arima_change_plot3.pdf)
+
+
 
 # Crime and mobility error correction models
 
@@ -1430,7 +1549,7 @@ lm_arima_stochastic %>%
                            levels = var_names[-c(9,10)])) -> lm_arima_augment
 
 lm_arima_augment %>%
-  ggplot(aes(.resid)) +
+  ggplot(aes(.innov)) +
   geom_density() +
   facet_wrap(~ Variable,
              scales = "free",
@@ -1442,7 +1561,7 @@ lm_arima_augment %>%
 ## Residual vs fitted
 
 lm_arima_augment %>%
-  ggplot(aes(.fitted, .resid)) +
+  ggplot(aes(.fitted, .innov)) +
   geom_hex() +
   scale_fill_continuous_tableau(palette = "Orange") +
   geom_smooth(se = TRUE,
@@ -1457,7 +1576,7 @@ lm_arima_augment %>%
 
 
 lm_arima_augment %>%
-  ggplot(aes(date, .resid)) +
+  ggplot(aes(date, .innov)) +
   geom_line(size = 0.1, alpha = 0.5) +
   facet_wrap(~ Variable,
              scales = "free",
@@ -1468,9 +1587,9 @@ lm_arima_augment %>%
   theme(legend.position = "none") -> lm_arima_residual_plot3
 
 lm_arima_augment %>%
-  ACF(.resid, lag_max = 14) %>%
+  ACF(.innov, lag_max = 14) %>%
   autoplot() +
-  # ggplot(aes(date, .resid)) +
+  # ggplot(aes(date, .innov)) +
   # geom_line(size = 0.05) +
   facet_wrap(~ Variable,
              # scales = "free",
@@ -1480,17 +1599,17 @@ lm_arima_augment %>%
   theme_clean() -> lm_arima_residual_plot4
 
 
-(plot_grid(lm_arima_residual_plot3,
+plot_grid(lm_arima_residual_plot3,
           lm_arima_residual_plot4,
           lm_arima_residual_plot,
           lm_arima_residual_plot2,
           labels = "AUTO",
           scale = 0.98,
           hjust = -0.9,
-          vjust = 1.7) -> arima_all_residual_plots)
+          vjust = 1.7) -> arima_all_residual_plots
 
 
-ggsave(filename = "plots/arima_all_residual_plots.pdf",
+ggsave(filename = "pdf-output/plots/arima_all_residual_plots.pdf",
        plot = arima_all_residual_plots,
        device = cairo_pdf,
        width = 20,
@@ -1516,7 +1635,7 @@ lb.test <- function(mdl, lags = 14){
     mdl %>%
       select(x) %>%
       augment %$%
-      Box.test(.resid,
+      Box.test(.innov,
                lag = lags,
                type = "Ljung-Box",
                fitdf = dfs) %$%
@@ -1533,20 +1652,20 @@ lb.test <- function(mdl, lags = 14){
 
 lm_arima_stochastic %>%
   group_by(Variable) %>%
+  #group_map(~ .x %>% mable(model = "lm"))
   group_map(~ .x %>%
-              as_mable %>%
+              mable(model = "lm") %>%
               lb.test(lags = 21) %>%
               mutate(Variable = .y$Variable) %>%
               select(last_col(), everything())) %>%
   bind_rows() -> lm_arima_stochastic_lb
-
 
 # Deterministic models
 
 lm_arima_deterministic %>%
   group_by(Variable) %>%
   group_map(~ .x %>%
-              as_mable %>%
+              mable(model = "lm") %>%
               lb.test(lags = 21) %>%
               mutate(Variable = .y$Variable) %>%
               select(last_col(), everything())) %>%
@@ -1563,7 +1682,7 @@ lm_arima_deterministic %>%
      lm_arima_deterministic) %>%
   map_df(~ .x %>%
         augment() %>%
-  features(.resid, unitroot_kpss)) %>%
+  features(.innov, unitroot_kpss)) %>%
     mutate(sig = victim::add_stars(kpss_pvalue)) -> lm_arima_kpss)
 
 
@@ -1588,7 +1707,7 @@ The Ljung-Box test suggest the the residuals of the following crimes are autocor
 
 It is necessary to fit these models by hand to find a more suitable fit.
 
-There was also an indication of non-stationarity for Violent Robbery. All other residuals were stationary. The fact that Ar terms for all crimes, serious violent crime, domestic violence and VAW calls  were not invertible (the were greater than 1), suggests that the residuals are non-stationary.
+There was also an indication of non-stationarity for Violent Robbery. All other residuals were stationary.
 
 - **All crimes**
 
@@ -1618,24 +1737,24 @@ daily_crime_mobility %>%
 
 # lm_arima_all_crimes_manual %>%
 #   augment() %>%
-#   ACF(.resid) %>%
+#   ACF(.innov) %>%
 #   autoplot()
 #
 # lm_arima_all_crimes_manual %>%
 #   augment() %>%
-#   ggplot(aes(date, .resid)) +
+#   ggplot(aes(date, .innov)) +
 #   geom_line() +
 #   facet_wrap(~ .model)
 #
 # lm_arima_all_crimes_manual %>%
 #   augment() %>%
-#   ggplot(aes(.resid)) +
+#   ggplot(aes(.innov)) +
 #   geom_density() +
 #   facet_wrap(~ .model)
 #
 # lm_arima_all_crimes_manual %>%
 #   augment() %>%
-#   ggplot(aes(.fitted, .resid)) +
+#   ggplot(aes(.fitted, .innov)) +
 #   geom_hex() +
 #   geom_smooth(method = "lm") +
 #   scale_fill_continuous_tableau(palette = "Orange") +
@@ -1650,7 +1769,7 @@ lb.test(lm_arima_all_crimes_manual, lags = 21)
 
 lm_arima_all_crimes_manual %>%
   augment() %>%
-  features(.resid, unitroot_kpss) %>%
+  features(.innov, unitroot_kpss) %>%
     mutate(sig = victim::add_stars(kpss_pvalue))
 
 # Best model is manual 2
@@ -1698,24 +1817,24 @@ daily_crime_mobility %>%
 
 # lm_arima_violent_robbery_manual %>%
 #   augment() %>%
-#   ACF(.resid) %>%
+#   ACF(.innov) %>%
 #   autoplot()
 #
 # lm_arima_violent_robbery_manual %>%
 #   augment() %>%
-#   ggplot(aes(date, .resid)) +
+#   ggplot(aes(date, .innov)) +
 #   geom_line() +
 #   facet_wrap(~ .model)
 #
 # lm_arima_violent_robbery_manual %>%
 #   augment() %>%
-#   ggplot(aes(.resid)) +
+#   ggplot(aes(.innov)) +
 #   geom_density() +
 #   facet_wrap(~ .model)
 #
 # lm_arima_violent_robbery_manual %>%
 #   augment() %>%
-#   ggplot(aes(.fitted, .resid)) +
+#   ggplot(aes(.fitted, .innov)) +
 #   geom_hex() +
 #   geom_smooth(method = "lm") +
 #   scale_fill_continuous_tableau(palette = "Orange") +
@@ -1730,7 +1849,7 @@ lb.test(lm_arima_violent_robbery_manual, lags = 21)
 
 lm_arima_violent_robbery_manual %>%
   augment() %>%
-  features(.resid, unitroot_kpss) %>%
+  features(.innov, unitroot_kpss) %>%
     mutate(sig = victim::add_stars(kpss_pvalue))
 
 # Best model is manual 1
@@ -1779,24 +1898,24 @@ daily_crime_mobility %>%
 
 # lm_arima_serious_violent_crime_manual %>%
 #   augment() %>%
-#   ACF(.resid) %>%
+#   ACF(.innov) %>%
 #   autoplot()
 #
 # lm_arima_serious_violent_crime_manual %>%
 #   augment() %>%
-#   ggplot(aes(date, .resid)) +
+#   ggplot(aes(date, .innov)) +
 #   geom_line() +
 #   facet_wrap(~ .model)
 #
 # lm_arima_serious_violent_crime_manual %>%
 #   augment() %>%
-#   ggplot(aes(.resid)) +
+#   ggplot(aes(.innov)) +
 #   geom_density() +
 #   facet_wrap(~ .model)
 #
 # lm_arima_serious_violent_crime_manual %>%
 #   augment() %>%
-#   ggplot(aes(.fitted, .resid)) +
+#   ggplot(aes(.fitted, .innov)) +
 #   geom_hex() +
 #   geom_smooth(method = "lm") +
 #   scale_fill_continuous_tableau(palette = "Orange") +
@@ -1811,7 +1930,7 @@ lb.test(lm_arima_serious_violent_crime_manual, lags = 21)
 
 lm_arima_serious_violent_crime_manual %>%
   augment() %>%
-  features(.resid, unitroot_kpss) %>%
+  features(.innov, unitroot_kpss) %>%
     mutate(sig = victim::add_stars(kpss_pvalue))
 
 # Best model is manual 2
@@ -1868,24 +1987,24 @@ daily_crime_mobility %>%
 
 # lm_arima_domestic_violence_manual %>%
 #   augment() %>%
-#   ACF(.resid) %>%
+#   ACF(.innov) %>%
 #   autoplot()
 #
 # lm_arima_domestic_violence_manual %>%
 #   augment() %>%
-#   ggplot(aes(date, .resid)) +
+#   ggplot(aes(date, .innov)) +
 #   geom_line() +
 #   facet_wrap(~ .model)
 #
 # lm_arima_domestic_violence_manual %>%
 #   augment() %>%
-#   ggplot(aes(.resid)) +
+#   ggplot(aes(.innov)) +
 #   geom_density() +
 #   facet_wrap(~ .model)
 #
 # lm_arima_domestic_violence_manual %>%
 #   augment() %>%
-#   ggplot(aes(.fitted, .resid)) +
+#   ggplot(aes(.fitted, .innov)) +
 #   geom_hex() +
 #   geom_smooth(method = "lm") +
 #   scale_fill_continuous_tableau(palette = "Orange") +
@@ -1900,10 +2019,10 @@ lb.test(lm_arima_domestic_violence_manual, lags = 21)
 
 lm_arima_domestic_violence_manual %>%
   augment() %>%
-  features(.resid, unitroot_kpss) %>%
+  features(.innov, unitroot_kpss) %>%
     mutate(sig = victim::add_stars(kpss_pvalue))
 
-# Best model is manual 3
+# Best model is manual 2
 
 lm_arima_deterministic %>%
   filter(Variable == "Domestic violence") %>%
@@ -1966,24 +2085,24 @@ daily_crime_mobility %>%
 
 # lm_arima_vaw_calls_manual %>%
 #   augment() %>%
-#   ACF(.resid) %>%
+#   ACF(.innov) %>%
 #   autoplot()
 #
 # lm_arima_vaw_calls_manual %>%
 #   augment() %>%
-#   ggplot(aes(date, .resid)) +
+#   ggplot(aes(date, .innov)) +
 #   geom_line() +
 #   facet_wrap(~ .model)
 #
 # lm_arima_vaw_calls_manual %>%
 #   augment() %>%
-#   ggplot(aes(.resid)) +
+#   ggplot(aes(.innov)) +
 #   geom_density() +
 #   facet_wrap(~ .model)
 #
 # lm_arima_vaw_calls_manual %>%
 #   augment() %>%
-#   ggplot(aes(.fitted, .resid)) +
+#   ggplot(aes(.fitted, .innov)) +
 #   geom_hex() +
 #   geom_smooth(method = "lm") +
 #   scale_fill_continuous_tableau(palette = "Orange") +
@@ -1997,7 +2116,7 @@ lb.test(lm_arima_vaw_calls_manual, lags = 21)
 
 lm_arima_vaw_calls_manual %>%
   augment() %>%
-  features(.resid, unitroot_kpss) %>%
+  features(.innov, unitroot_kpss) %>%
     mutate(sig = victim::add_stars(kpss_pvalue))
 
 # Best model is manual 2
@@ -2047,7 +2166,8 @@ lm_manual_models_ls %>%
                date,
                value,
                .fitted,
-               .resid) %>%
+               .resid,
+               .innov) %>%
           as_tibble(),
         .id = "Variable") %>%
   mutate(Variable = factor(Variable, levels = var_names[-c(9,20)])) %>%
@@ -2057,7 +2177,7 @@ lm_manual_models_ls %>%
 # residual density
 
 lm_arima_augment_corrected %>%
-  ggplot(aes(.resid)) +
+  ggplot(aes(.innov)) +
   geom_density() +
   facet_wrap(~ Variable,
              scales = "free",
@@ -2069,7 +2189,7 @@ lm_arima_augment_corrected %>%
 ## Residual vs fitted
 
 lm_arima_augment_corrected %>%
-  ggplot(aes(.fitted, .resid)) +
+  ggplot(aes(.fitted, .innov)) +
   geom_hex() +
   scale_fill_continuous_tableau(palette = "Orange") +
   geom_smooth(se = TRUE,
@@ -2083,7 +2203,7 @@ lm_arima_augment_corrected %>%
   theme(legend.position = "none") -> lm_arima_residual_plot2_corrected
 
 lm_arima_augment_corrected %>%
-  ggplot(aes(date, .resid)) +
+  ggplot(aes(date, .innov)) +
   geom_line(size = 0.01, alpha = 0.5) +
   facet_wrap(~ Variable,
              scales = "free",
@@ -2095,9 +2215,9 @@ lm_arima_augment_corrected %>%
 
 lm_arima_augment_corrected %>%
   as_tsibble(key = Variable)  %>%
-  ACF(.resid, lag_max = 21) %>%
+  ACF(.innov, lag_max = 21) %>%
   autoplot() +
-  # ggplot(aes(date, .resid)) +
+  # ggplot(aes(date, .innov)) +
   # geom_line(size = 0.05) +
   facet_wrap(~ Variable,
              # scales = "free",
@@ -2116,7 +2236,7 @@ plot_grid(lm_arima_residual_plot3_corrected,
           vjust = 1.7) -> arima_all_residual_plots_corrected
 
 
-ggsave(filename = "plots/arima_all_residual_plots_corrected.pdf",
+ggsave(filename = "pdf-output/plots/arima_all_residual_plots_corrected.pdf",
        plot = arima_all_residual_plots_corrected,
        device = cairo_pdf,
        width = 20,
@@ -2178,7 +2298,7 @@ lm_manual_models_ls %>%
 
 (lm_arima_augment_corrected %>%
   as_tsibble(key = Variable) %>%
-  features(.resid, unitroot_kpss) %>%
+  features(.innov, unitroot_kpss) %>%
   transmute(Variable = Variable,
             KPSS = kpss_stat,
             pvalue = kpss_pvalue,
@@ -2402,7 +2522,7 @@ ci_upper<- function(estimate, se, level = 0.95){
   upper
 }
 
-mobility_drop <- 0.5
+mobility_drop <- (1-0.681)
 
 lm_arima_tidy_estimates %>%
   mutate(Period = "Pre- and post-COVID-19") %>%
@@ -2440,7 +2560,7 @@ lm_arima_ci_complete %>%
   guides(colour = guide_legend(nrow=2,byrow=TRUE)) +
   labs(caption = "Error bars represent 95% confidence interval") -> lm_arima_percent_change_plot
 
-ggsave(filename = "plots/lm_arima_percent_change_plot.pdf",
+ggsave(filename = "pdf-output/plots/lm_arima_percent_change_plot.pdf",
        plot = lm_arima_percent_change_plot,
        device = cairo_pdf,
        width = 7,
@@ -2467,6 +2587,240 @@ lm_arima_ci_complete %>%
 ![](plots/lm_arima_percent_change_plot.pdf)
 
 
+
+Conduct robustness checks for crime-mobility models, using pre/post lockdown data subsets.
+
+```{r lm-arima-robustness-lockdown}
+
+# Refit auto models
+
+lm_arima_stochastic %>%
+  as_tibble() %>%
+  bind_rows(as_tibble(lm_arima_deterministic)) %>%
+  filter(!Variable %in% corrected_models) %>%
+  mable(key = Variable, model = lm) -> lm_arima_auto_mable
+
+daily_crime_mobility_pre_lockdown %>%
+  select(-c(`BRT + SCT passengers`)) %>%
+  pivot_longer(-c(date, `BRT + SCT passengers (in millions)`),
+               names_to = "Variable") %>%
+  mutate(Variable = fct_inorder(Variable)) %>%
+  as_tsibble(key = Variable) %>%
+  refit(lm_arima_auto_mable,
+        new_data = . ,
+        reestimate = TRUE) -> lm_arima_auto_mable_pre_lockdown
+
+
+daily_crime_mobility_post_lockdown %>%
+  select(-c(`BRT + SCT passengers`)) %>%
+  pivot_longer(-c(date, `BRT + SCT passengers (in millions)`),
+               names_to = "Variable") %>%
+  mutate(Variable = fct_inorder(Variable)) %>%
+  as_tsibble(key = Variable) %>%
+  refit(lm_arima_auto_mable,
+        new_data = .,
+        reestimate = TRUE) -> lm_arima_auto_mable_post_lockdown
+
+
+lm_arima_auto_mable_pre_lockdown %>%
+  tidy %>%
+  mutate(Period = "Pre-lockdown") %>%
+  bind_rows(lm_arima_auto_mable_post_lockdown %>%
+              tidy %>%
+              mutate(Period = "Post-lockdown")) -> lm_arima_auto_pre_post_lockdown_tidy
+
+# Refit manual models
+
+lm_manual_models_ls %>%
+  map_df(~ .x %>% refit(new_data = daily_crime_mobility_pre_lockdown,
+                     reestimate = TRUE) %>%
+        tidy %>%
+        mutate(Period = "Pre-lockdown"),
+        .id = "Variable") -> lm_manual_pre_lockdown_tidy
+
+
+lm_manual_models_ls %>%
+  map_df(~ .x %>% refit(new_data = daily_crime_mobility_post_lockdown,
+                     reestimate = TRUE) %>%
+        tidy %>%
+        mutate(Period = "Post-lockdown"),
+        .id = "Variable") -> lm_manual_post_lockdown_tidy
+
+lm_manual_pre_lockdown_tidy %>%
+  bind_rows(lm_manual_post_lockdown_tidy) %>%
+  mutate(Variable = factor(Variable, levels = var_names)) %>%
+  bind_rows(lm_arima_auto_pre_post_lockdown_tidy) %>%
+  arrange(Variable) -> lm_arima_all_models_pre_post_lockdown_tidy
+
+```
+
+
+
+Forest plot for mobility coefficient (move to end, include robustness checks estimates)
+
+```{r crime-mobility-coefficient-lockdown}
+
+# get CI for mobility estimates
+
+
+lm_arima_tidy_estimates %>%
+  mutate(Period = "Pre- and post-lockdown") %>%
+  bind_rows(lm_arima_all_models_pre_post_lockdown_tidy) %>%
+  mutate(Period = fct_inorder(Period)) %>%
+  filter(str_detect(term, "BRT")) %>%
+  transmute(Variable = Variable,
+            estimate = estimate,
+            lower = ci_lower(estimate, std.error),
+            upper = ci_upper(estimate, std.error),
+            percent_estimate = (mobility_drop^estimate)-1,
+            percent_upper = (mobility_drop^lower)-1,
+            percent_lower = (mobility_drop^upper)-1,
+            Period = Period) -> lm_arima_lockdown_ci_complete
+
+lm_arima_lockdown_ci_complete %>%
+  mutate(Variable = fct_rev(Variable)) %>%
+  arrange(Variable) %>%
+  ggplot(aes(percent_estimate, Variable, colour = Period)) +
+  geom_point(position = position_dodge(width = -0.5))  +
+  geom_vline(xintercept = 0, colour = "grey75") +
+  geom_errorbarh(aes(xmin = percent_lower,
+                     xmax = percent_upper), height = .3,
+                 position = position_dodge(width = -0.5)) +
+  theme_clean() +
+  # scale_color_colorblind() +
+  scale_color_manual(values = c("#000000", "#009E73", "#0072B2")) +
+  scale_x_continuous("Estimated percentage change in crime for a 50% reduction in mobility",
+                     labels = scales::percent) +
+  ylab(NULL) +
+  theme(legend.position = "bottom",
+        legend.text = element_text(size = 10),
+        legend.title = element_text(size = 10),
+        legend.box = "vertical") +
+  guides(colour = guide_legend(nrow=2,byrow=TRUE)) +
+  labs(caption = "Error bars represent 95% confidence interval") -> lm_arima_percent_change_lockdown_plot
+
+ggsave(filename = "pdf-output/plots/lm_arima_percent_change_lockdown_plot.pdf",
+       plot = lm_arima_percent_change_lockdown_plot,
+       device = cairo_pdf,
+       width = 7,
+       height = 6)
+
+
+lm_arima_lockdown_ci_complete %>%
+  mutate(change = paste0(label_percent(accuracy = 0.1)(percent_estimate),
+                         " [",
+                         label_percent(accuracy = 0.1)(percent_lower),
+                         ", ",
+                         label_percent(accuracy = 0.1)(percent_upper),
+                         "]")) %>%
+  select(Variable, Period, change) %>%
+  pivot_wider(names_from = Period,
+              values_from = change,
+              names_glue = "{Period} [95% CI]") %>%
+  kable(digits = 2,
+        align = c("l","r","r","r"))
+
+
+```
+
+![](plots/lm_arima_percent_change_lockdown_plot.pdf)
+
+
+
+
+Present robustness checks for crime-mobility models, using pre/post lockdown data subsets, excluding the period after the first cases were detected in the country.
+
+```{r lm-arima-covid-robustness-lockdown}
+
+# Combine pre covid and post lockdown auto estimates
+
+lm_arima_auto_mable_pre_covid %>%
+  tidy %>%
+  mutate(Period = "Pre-COVID-19") %>%
+  bind_rows(lm_arima_auto_mable_post_lockdown %>%
+              tidy %>%
+              mutate(Period = "Post-lockdown")) -> lm_arima_auto_pre_covid_post_lockdown_tidy
+
+# From manual models
+
+lm_manual_pre_tidy %>%
+  bind_rows(lm_manual_post_lockdown_tidy) %>%
+  mutate(Variable = factor(Variable, levels = var_names)) %>%
+  bind_rows(lm_arima_auto_pre_covid_post_lockdown_tidy) %>%
+  arrange(Variable) -> lm_arima_all_models_pre_covid_post_lockdown_tidy
+
+```
+
+
+
+Forest plot for mobility coefficient (move to end, include robustness checks estimates)
+
+```{r crime-mobility-coefficient-covid-lockdown}
+
+# get CI for mobility estimates
+
+
+lm_arima_tidy_estimates %>%
+  mutate(Period = "Complete period") %>%
+  bind_rows(lm_arima_all_models_pre_covid_post_lockdown_tidy) %>%
+  mutate(Period = fct_inorder(Period)) %>%
+  filter(str_detect(term, "BRT")) %>%
+  transmute(Variable = Variable,
+            estimate = estimate,
+            lower = ci_lower(estimate, std.error),
+            upper = ci_upper(estimate, std.error),
+            percent_estimate = (mobility_drop^estimate)-1,
+            percent_upper = (mobility_drop^lower)-1,
+            percent_lower = (mobility_drop^upper)-1,
+            Period = Period) -> lm_arima_covid_lockdown_ci_complete
+
+lm_arima_covid_lockdown_ci_complete %>%
+  mutate(Variable = fct_rev(Variable)) %>%
+  arrange(Variable) %>%
+  ggplot(aes(percent_estimate, Variable, colour = Period)) +
+  geom_point(position = position_dodge(width = -0.5))  +
+  geom_vline(xintercept = 0, colour = "grey75") +
+  geom_errorbarh(aes(xmin = percent_lower,
+                     xmax = percent_upper), height = .3,
+                 position = position_dodge(width = -0.5)) +
+  theme_clean() +
+  # scale_color_colorblind() +
+  scale_color_manual(values = c("#000000", "#009E73", "#0072B2")) +
+  scale_x_continuous("Estimated percentage change in crime for a 68.1% reduction in mobility",
+                     labels = scales::percent) +
+  ylab(NULL) +
+  theme(legend.position = "bottom",
+        legend.text = element_text(size = 10),
+        legend.title = element_text(size = 10),
+        legend.box = "vertical") +
+  guides(colour = guide_legend(nrow=2,byrow=TRUE)) +
+  labs(caption = "Error bars represent 95% confidence interval") -> lm_arima_percent_change_covid_lockdown_plot
+
+ggsave(filename = "pdf-output/plots/lm_arima_percent_change_covid_lockdown_plot.pdf",
+       plot = lm_arima_percent_change_covid_lockdown_plot,
+       device = cairo_pdf,
+       width = 7,
+       height = 6)
+
+
+lm_arima_covid_lockdown_ci_complete %>%
+  mutate(change = paste0(label_percent(accuracy = 0.1)(percent_estimate),
+                         " [",
+                         label_percent(accuracy = 0.1)(percent_lower),
+                         ", ",
+                         label_percent(accuracy = 0.1)(percent_upper),
+                         "]")) %>%
+  select(Variable, Period, change) %>%
+  pivot_wider(names_from = Period,
+              values_from = change,
+              names_glue = "{Period} [95% CI]") %>%
+  kable(digits = 2,
+        align = c("l","r","r","r"))
+
+
+```
+
+![](plots/lm_arima_percent_change_covid_lockdown_plot.pdf)
 
 
 

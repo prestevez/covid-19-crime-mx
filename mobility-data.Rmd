@@ -1,0 +1,258 @@
+---
+title: "Crime and COVID-19: Reliability of public transport as a proxy for mobility"
+author: "Patricio R Estévez-Soto"
+date: "June 1, 2021"
+output: 
+  pdf_document: 
+  html_document: 
+    keep_md: TRUE
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r packages, include=TRUE, echo=TRUE}
+require(tidyverse)
+require(lubridate)
+require(magrittr)
+require(broom)
+require(ggthemes)
+
+kable <- knitr::kable
+
+adf.test <- tseries::adf.test
+white.test <- tseries::white.test
+
+Sys.setenv("TZ"="Europe/London")
+require(fable)
+require(tsibble)
+require(feasts)
+
+## multiprocessing
+# require(future)
+# 
+# plan(multiprocess, workers = 6)
+
+
+## requires future.apply to be installed
+
+# install.packages("future.apply")
+
+## geom_hex requires hexbin package
+
+# install.packages("hexbin")
+# 
+# # install.packages("cowplot")
+# require(cowplot)
+# 
+# # load("tmp.Rdata")
+# 
+# require(scales)
+
+sessionInfo()
+
+```
+
+
+
+# Introduction
+
+This document explores the reliability of using public transport passenger numbers as a proxy for mobility.
+
+# Data
+
+Crime data come from Mexico City's Open Data portal and represent criminal investigations undertaken by the City's criminal prosecutor's office. Violence against women (VAW) calls come from a dedicated phone service. Passenger numbers in public transport come from the same open data portal and count Bus Rapid Transit and Metro passengers (as well as a measure combining total passengers of both services). Only total passenger counts were used in the analysis.
+
+```{r import-crime-data}
+
+daily_crime_mobility <- read_csv("https://raw.githubusercontent.com/prestevez/covid-19-crime-mx/master/data/daily_crime_mobility-2020-07-13.csv") %>% as_tsibble()
+
+covid_date <- ymd("2020-02-29")
+
+covid_lockdown <- ymd("2020-03-23")
+
+```
+
+
+# Data preparation
+
+Observations for the last week of May were discarded to control for the lag in reporting that may affect the most recent figures.
+
+Data were further split into two periods. The "training" data set used to estimate models before the impact of COVID-19 restrictions represent all observations from Jan. 1, 2017 to Feb 28, 2020, the day before the first COVID-19 cases were reported in the country.
+
+```{r data-preparation}
+
+daily_crime_mobility %>%
+  filter(fecha < "2020-05-25") %>%
+  select(-c(año, mes, diasem)) %>%
+  select(date = fecha,
+         "All crimes" = all_crimes,
+         "Violent robbery" = violent_robbery,
+         "Non-violent robbery" = non_violent_robbery,
+         "Robbery against residence" = burglary,
+         "Serious violent crime (non-sexual)" = violent_crime,
+         "Sexual violence" = sex_crime,
+         "Domestic violence" = domestic_violence,
+         "VAW helpline calls" = calls_vaw,
+         "BRT + SCT passengers" = pas_total) %>%
+  mutate("BRT + SCT passengers (in millions)" = `BRT + SCT passengers`/1e6) -> daily_crime_mobility
+
+# The names of columns were changed for aesthetic purposes
+
+# split data into periods
+
+daily_crime_mobility_pre_covid <- daily_crime_mobility %>%
+  filter(date < covid_date)
+
+daily_crime_mobility_post_covid <-daily_crime_mobility %>%
+  filter(date >= covid_date)
+
+daily_crime_mobility_2020 <- daily_crime_mobility %>%
+  filter(date >= "2020-01-01")
+
+# create pre/post lockdown subsets
+
+daily_crime_mobility_pre_lockdown <- daily_crime_mobility %>%
+  filter(date < covid_lockdown)
+
+daily_crime_mobility_post_lockdown <-daily_crime_mobility %>%
+  filter(date >= covid_lockdown)
+
+
+
+```
+
+Import Apple Mobility data
+
+```{r apple-mobility}
+
+apple <- read_csv("data/applemobilitytrends-2021-05-02.csv")
+daily_crime_mobility %$%
+  range(date)[2] -> max_date
+
+apple %>%
+  filter(region == "Mexico City") %>%
+  select(-geo_type, -region, -alternative_name, -`sub-region`, -country) %>%
+  pivot_longer(-transportation_type, names_to = "date") %>%
+  mutate(date = ymd(date)) %>%
+    filter(date <= max_date) -> apple_cdmx
+
+apple_cdmx %>%
+  ggplot(aes(date, value, colour = transportation_type)) +
+  geom_line() +
+  geom_vline(xintercept = covid_date, linetype = 2) +
+  geom_vline(xintercept = covid_lockdown, linetype = 2)
+
+
+apple_cdmx %$%
+  range(date)[1] -> min_date
+
+daily_crime_mobility %>%
+  filter(date >= min_date) %>%
+  select(date, `BRT + SCT passengers (in millions)`) -> brtsct
+
+brtsct %>%
+  filter(date == min_date) %$% `BRT + SCT passengers (in millions)` -> brtsct_index_value
+
+brtsct %>%
+  select(date, value = `BRT + SCT passengers (in millions)`) %>%
+  mutate(transportation_type = "BRT + SCT") %>%
+  select(transportation_type, date, value) %>%
+  as_tibble() %>%
+  mutate(value = value/brtsct_index_value *  100) %>%
+  bind_rows(apple_cdmx) %>%
+  ggplot(aes(date, value, colour = transportation_type)) +
+  geom_line() +
+  geom_vline(xintercept = covid_date, linetype = 2) +
+  geom_vline(xintercept = covid_lockdown, linetype = 2)
+  
+
+brtsct %>%
+  select(date, value = `BRT + SCT passengers (in millions)`) %>%
+  mutate(transportation_type = "BRT + SCT") %>%
+  select(transportation_type, date, value) %>%
+  as_tibble() %>%
+  mutate(value = value/brtsct_index_value *  100) %>%
+  bind_rows(apple_cdmx) -> mobility_data
+
+```
+
+
+Now examine the relationship
+
+```{r relationship-mobility}
+
+mobility_data %>%
+  pivot_wider(names_from = transportation_type,
+              values_from = value) %>%
+  select(date, brtsct = `BRT + SCT`, driving, transit, walking) -> mobility_wide
+
+m1 <- lm(brtsct ~ driving, data = mobility_wide)
+m2 <- lm(brtsct ~ transit, data = mobility_wide)
+m3 <- lm(brtsct ~ walking, data = mobility_wide)
+
+require(texreg)
+
+screenreg(list(m1, m2, m3))
+
+```
+
+
+```{r arima-mobility}
+mobility_wide %>%
+  as_tsibble() %>%
+  model(driving = ARIMA(brtsct ~ driving),
+        transit = ARIMA(brtsct ~ transit),
+        walking = ARIMA(brtsct ~ walking)) -> mobility_lm_arima
+
+
+mobility_lm_arima %>%
+  select(driving) %>%
+  report
+
+mobility_lm_arima %>%
+  select(transit) %>%
+  report
+
+mobility_lm_arima %>%
+  select(walking) %>%
+  report
+
+mobility_wide %>%
+  pivot_longer(-c(date, brtsct)) %>%
+  ggplot(aes(value, brtsct, colour = name)) +
+  geom_point() +
+  geom_smooth() +
+  facet_wrap(~ name)
+
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

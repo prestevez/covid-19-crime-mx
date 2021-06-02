@@ -8,7 +8,9 @@ data/*
 .Rproj.user
 tmp.Rdata
 plots/
+!plots/*.pdf
 *.sh
+!render-pdf-docker.sh
 results/
 .stata14/
 documents/
@@ -16,3 +18,12 @@ tables/
 *.do
 covid-final-models.md
 covid-final-models.html
+covid-final-models.knit.md
+covid-final-models.utf8.md
+covid-final-models.log
+*.tar.gz
+html-output/
+pdf-output/
+figure/
+mobility-data*
+!mobility-data.Rmd
